@@ -1,0 +1,13 @@
+{
+  "_comment": "Ye file copy karo aur apne project mein .mcp-config.json naam se save karo",
+  "framework": "django",
+  "language": "python",
+  "db": "postgresql",
+  "env_file": ".env",
+  "allowed_tools": ["shell_run", "file_read", "file_write", "git_status", "git_commit"],
+  "_note": "allowed_tools empty rakhne par sab tools allow honge",
+  "django": {
+    "run_command": "python manage.py runserver",
+    "test_command": "pytest"
+  }
+}
