@@ -3,6 +3,7 @@ from pathlib import Path
 
 GLOBAL_CONFIG_DIR = Path.home() / ".universal-dev-mcp"
 GLOBAL_CONFIG_FILE = GLOBAL_CONFIG_DIR / "config.json"
+GLOBAL_MCP_CONFIG_FILE = GLOBAL_CONFIG_DIR / "mcp-config.json"  # plugin/framework config
 COMMON_PROJECT_KEYS = {
     "_comment",
     "_note",
@@ -68,11 +69,37 @@ def _split_project_config(config: dict) -> dict:
     return root
 
 
-def load_project_config(project_path: str) -> dict:
-    config_file = Path(project_path) / ".mcp-config.json"
-    if config_file.exists():
-        return _normalize_project_config(json.loads(config_file.read_text()))
+def load_global_mcp_config() -> dict:
+    """Load global plugin/framework config from ~/.universal-dev-mcp/mcp-config.json"""
+    if GLOBAL_MCP_CONFIG_FILE.exists():
+        return _normalize_project_config(json.loads(GLOBAL_MCP_CONFIG_FILE.read_text()))
     return {}
+
+
+def load_project_config(project_path: str) -> dict:
+    """Load config with merge: global mcp-config → project .mcp-config.json (project wins)."""
+    global_cfg = load_global_mcp_config()
+
+    project_file = Path(project_path) / ".mcp-config.json"
+    if project_file.exists():
+        project_cfg = _normalize_project_config(json.loads(project_file.read_text()))
+        # Deep merge: project overrides global, but global fills missing keys
+        merged = {**global_cfg, **project_cfg}
+        # Special case: site_credentials merge (don't overwrite, extend)
+        if "site_credentials" in global_cfg and "site_credentials" in project_cfg:
+            merged["site_credentials"] = {
+                **global_cfg["site_credentials"],
+                **project_cfg["site_credentials"],
+            }
+        # Special case: benches merge (combine both lists, deduplicate by id)
+        if "benches" in global_cfg or "benches" in project_cfg:
+            g_benches = {b["id"]: b for b in global_cfg.get("benches", []) if isinstance(b, dict) and "id" in b}
+            p_benches = {b["id"]: b for b in project_cfg.get("benches", []) if isinstance(b, dict) and "id" in b}
+            g_benches.update(p_benches)  # project overrides global for same id
+            merged["benches"] = list(g_benches.values())
+        return merged
+
+    return global_cfg
 
 
 def save_project_config(project_path: str, config: dict):

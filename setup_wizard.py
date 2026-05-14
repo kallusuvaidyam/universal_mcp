@@ -8,6 +8,7 @@ import sys
 import json
 import subprocess
 import platform
+import shutil
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".universal-dev-mcp"
@@ -15,12 +16,12 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 def print_banner():
-    print("\n" + "="*55)
+    print("\n" + "=" * 55)
     print("  Universal Dev MCP — Setup Wizard")
-    print("="*55)
+    print("=" * 55)
     print("  Yeh wizard aapka ek baar ka setup karega.")
     print("  Baad mein sirf: python main.py start")
-    print("="*55 + "\n")
+    print("=" * 55 + "\n")
 
 
 def ask(prompt: str, default: str = "") -> str:
@@ -38,6 +39,22 @@ def ask_yes_no(prompt: str, default: bool = True) -> bool:
     return val in ("y", "yes", "haan", "ha")
 
 
+def ask_choice(prompt: str, options: list[tuple[str, str]]) -> str:
+    """Show numbered options and return chosen key."""
+    print(f"\n  {prompt}")
+    for i, (key, label) in enumerate(options, 1):
+        print(f"  {i}. {label}")
+    while True:
+        val = input(f"\n  Apna choice enter karo (1-{len(options)}): ").strip()
+        if val.isdigit() and 1 <= int(val) <= len(options):
+            return options[int(val) - 1][0]
+        print(f"  ❌ Galat input. 1 se {len(options)} ke beech number enter karo.")
+
+
+# ─────────────────────────────────────────────
+# STEP 1 — Python check
+# ─────────────────────────────────────────────
+
 def check_python():
     print("📋 Step 1: Python check...")
     v = sys.version_info
@@ -47,12 +64,16 @@ def check_python():
     print(f"  ✅ Python {v.major}.{v.minor} — OK\n")
 
 
+# ─────────────────────────────────────────────
+# STEP 2 — Dependencies
+# ─────────────────────────────────────────────
+
 def install_requirements():
     print("📋 Step 2: Dependencies install karo...")
     req_file = Path(__file__).parent / "requirements.txt"
     result = subprocess.run(
         [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q"],
-        capture_output=True, text=True
+        capture_output=True, text=True,
     )
     if result.returncode != 0:
         print(f"  ❌ Install failed:\n{result.stderr}")
@@ -60,89 +81,347 @@ def install_requirements():
     print("  ✅ Dependencies installed\n")
 
 
-def install_cloudflared():
-    print("📋 Step 3: Cloudflare Tunnel setup...")
+# ─────────────────────────────────────────────
+# STEP 3 — Tunnel provider selection
+# ─────────────────────────────────────────────
 
-    import shutil
-    if shutil.which("cloudflared"):
-        print("  ✅ cloudflared already installed\n")
-        return True
+def setup_tunnel() -> dict:
+    print("📋 Step 3: Public URL / Tunnel setup...")
+    print()
+    print("  Claude.ai web se connect karne ke liye ek public HTTPS URL chahiye.")
+    print()
 
-    print("  cloudflared nahi mila. Install karna chahoge?")
-    print("  (Cloudflare tunnel ke liye zaruri hai)")
-    if not ask_yes_no("  Install cloudflared?"):
-        print("  ⚠ Skip kiya. Tunnel kaam nahi karega.\n")
-        return False
+    print("  NOTE: claude.ai web sirf HTTPS public URL accept karta hai.")
+    print("        localhost/local URL claude.ai mein kaam NAHI karega.")
+    print("        Claude Code CLI (terminal) ke liye local bhi chalega.")
+    print()
 
-    system = platform.system().lower()
-    machine = platform.machine().lower()
+    provider = ask_choice(
+        "Kaunsa tunnel provider use karna chahoge?",
+        [
+            ("tailscale",   "Tailscale Funnel  — Free, stable URL, no domain needed (Recommended)"),
+            ("ngrok",       "Ngrok             — Free static domain milta hai (1 per account)"),
+            ("cloudflare",  "Cloudflare Tunnel — Free, stable, apna domain chahiye"),
+            ("manual",      "Manual URL        — Mere paas pehle se URL hai (koi bhi provider)"),
+            ("cli_only",    "Claude Code CLI only — claude.ai web nahi, sirf terminal mein use karunga"),
+        ],
+    )
+    print()
 
-    urls = {
-        ("linux", "x86_64"): "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64",
-        ("linux", "aarch64"): "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64",
-        ("darwin", "x86_64"): "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz",
-        ("darwin", "arm64"): "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz",
+    if provider == "tailscale":
+        return _setup_tailscale()
+    if provider == "ngrok":
+        return _setup_ngrok()
+    if provider == "cloudflare":
+        return _setup_cloudflare()
+    if provider == "manual":
+        return _setup_manual()
+    # cli_only
+    print("  ✅ Local only mode — http://localhost:8080/mcp")
+    print("  ⚠ Claude Code CLI mein add karo (claude.ai web mein nahi chalega).\n")
+    return {"tunnel_provider": "local_only"}
+
+
+# ── Tailscale ──────────────────────────────
+
+def _setup_tailscale() -> dict:
+    print("  ── Tailscale Funnel Setup ──")
+
+    if not shutil.which("tailscale"):
+        print("  tailscale nahi mila. Install karo:")
+        print("    curl -fsSL https://tailscale.com/install.sh | sh")
+        print("    sudo tailscale up")
+        print()
+        input("  Install karke Enter dabao... ")
+
+    print()
+    print("  Funnel enable karo:")
+    print("    sudo tailscale funnel reset")
+    print("    sudo tailscale funnel 8080")
+    print()
+    print("  URL kuch aisa dikhega:")
+    print("    https://your-machine-name.tail1234.ts.net/")
+    print()
+    input("  Jab URL mil jaye, Enter dabao... ")
+
+    url = ask("  Aapka Tailscale URL (e.g. https://suv.tail8f8b29.ts.net)")
+    url = _normalize_url(url)
+    print(f"\n  ✅ Saved: {url}\n")
+    return {"tunnel_provider": "tailscale", "tunnel_url": url}
+
+
+# ── Ngrok ──────────────────────────────────
+
+def _setup_ngrok() -> dict:
+    print("  ── Ngrok Setup ──")
+
+    if not shutil.which("ngrok"):
+        print("  ngrok nahi mila. Install karo:")
+        system = platform.system().lower()
+        if system == "linux":
+            print("    curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc")
+            print("    echo 'deb https://ngrok-agent.s3.amazonaws.com buster main' | sudo tee /etc/apt/sources.list.d/ngrok.list")
+            print("    sudo apt update && sudo apt install ngrok")
+        elif system == "darwin":
+            print("    brew install ngrok/ngrok/ngrok")
+        else:
+            print("    https://ngrok.com/download se download karo")
+        print()
+        input("  Install karke Enter dabao... ")
+
+    print()
+    print("  Static domain ke liye:")
+    print("  1. https://ngrok.com par free account banao")
+    print("  2. Dashboard → Domains → 'New Domain' — ek free static domain milega")
+    print("  3. Terminal mein:")
+    print("     ngrok config add-authtoken <YOUR_TOKEN>")
+    print("     ngrok http --domain=your-domain.ngrok-free.app 8080")
+    print()
+    input("  Jab domain ready ho, Enter dabao... ")
+
+    domain = ask("  Ngrok domain (e.g. your-domain.ngrok-free.app)")
+    authtoken = ask("  Ngrok auth token (dashboard mein milega)")
+    url = _normalize_url(domain)
+
+    # Save authtoken to ngrok config
+    if authtoken:
+        subprocess.run(["ngrok", "config", "add-authtoken", authtoken],
+                       capture_output=True)
+
+    print(f"\n  ✅ Saved: {url}\n")
+    return {
+        "tunnel_provider": "ngrok",
+        "tunnel_url": url,
+        "ngrok_domain": domain.replace("https://", "").replace("http://", ""),
+        "ngrok_authtoken": authtoken,
     }
 
+
+# ── Cloudflare ─────────────────────────────
+
+def _setup_cloudflare() -> dict:
+    print("  ── Cloudflare Tunnel Setup ──")
+
+    if not shutil.which("cloudflared"):
+        print("  cloudflared nahi mila. Install karo:")
+        _install_cloudflared()
+
+    print()
+    print("  1. https://cloudflare.com par free account banao")
+    print("  2. Apna domain Cloudflare mein add karo")
+    print("  3. Terminal mein:")
+    print("     cloudflared login")
+    print("     cloudflared tunnel create my-mcp")
+    print("     cloudflared tunnel route dns my-mcp mcp.yourdomain.com")
+    print()
+    input("  Jab setup ho jaye, Enter dabao... ")
+
+    tunnel_name = ask("  Tunnel naam (e.g. my-mcp)", "my-mcp")
+    tunnel_url = ask("  Tunnel URL (e.g. mcp.yourdomain.com)")
+    tunnel_url = _normalize_url(tunnel_url)
+
+    print(f"\n  ✅ Saved: {tunnel_url}\n")
+    return {
+        "tunnel_provider": "cloudflare",
+        "tunnel_url": tunnel_url,
+        "tunnel_name": tunnel_name,
+    }
+
+
+def _install_cloudflared():
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    urls = {
+        ("linux", "x86_64"):  "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64",
+        ("linux", "aarch64"): "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64",
+        ("darwin", "x86_64"): "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz",
+        ("darwin", "arm64"):  "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz",
+    }
     url = urls.get((system, machine))
     if not url:
-        print(f"  ❌ Aapke OS ({system}/{machine}) ke liye auto-install nahi. Manual install karo:")
-        print("  https://developers.cloudflare.com/cloudflared/get-started/")
-        return False
-
+        print(f"  ❌ Auto-install nahi ({system}/{machine}). Manual: https://developers.cloudflare.com/cloudflared/get-started/")
+        return
     dest = CONFIG_DIR / "cloudflared"
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
-    print(f"  Downloading cloudflared...")
+    print("  Downloading cloudflared...")
     result = subprocess.run(["curl", "-L", "-o", str(dest), url], capture_output=True)
     if result.returncode == 0:
         dest.chmod(0o755)
-        # Add to PATH for this session
         os.environ["PATH"] = str(CONFIG_DIR) + ":" + os.environ.get("PATH", "")
-        print(f"  ✅ cloudflared installed at: {dest}\n")
-        return True
+        print(f"  ✅ cloudflared installed: {dest}")
     else:
         print("  ❌ Download failed. Manual install karo.")
-        return False
 
 
-def setup_cloudflare_stable():
-    """Guide user through stable tunnel setup."""
-    print("📋 Step 4: Cloudflare Stable Tunnel configure karo...")
+# ── Manual ─────────────────────────────────
+
+def _setup_manual() -> dict:
+    print("  ── Manual URL Setup ──")
     print()
-    print("  Stable tunnel ke liye ek free Cloudflare account chahiye.")
-    print("  Isse aapka URL hamesha same rahega (server restart ke baad bhi).")
+    print("  Agar aapke paas pehle se koi public HTTPS URL hai")
+    print("  (kisi bhi provider ka — bore.pub, localtunnel, etc.)")
+    print()
+    url = ask("  Aapka public URL (https://...)")
+    url = _normalize_url(url)
+    print(f"\n  ✅ Saved: {url}\n")
+    return {"tunnel_provider": "manual", "tunnel_url": url}
+
+
+def _normalize_url(url: str) -> str:
+    url = url.strip().rstrip("/")
+    if url and not url.startswith("https://") and not url.startswith("http://"):
+        url = "https://" + url
+    return url
+
+
+# ─────────────────────────────────────────────
+# STEP 4 — Plugin / Framework selection
+# ─────────────────────────────────────────────
+
+ALL_PLUGINS = [
+    ("frappe",        "Frappe / ERPNext    — Frappe bench, sites, DocTypes, API"),
+    ("vue",           "Vue.js              — Vue 3, Vite, Nuxt"),
+    ("react",         "React               — React, Next.js, Vite"),
+    ("flutter",       "Flutter             — Dart, Android, iOS builds"),
+    ("django",        "Django              — Python web framework"),
+    ("fastapi",       "FastAPI             — Python async API"),
+    ("flask",         "Flask               — Python micro-framework"),
+    ("node",          "Node.js             — Express, npm scripts"),
+    ("laravel",       "Laravel             — PHP framework"),
+    ("docker",        "Docker              — Containers, compose, logs"),
+    ("postgres",      "PostgreSQL          — DB queries, migrations"),
+    ("mysql",         "MySQL / MariaDB     — DB queries, migrations"),
+    ("mongodb",       "MongoDB             — Collections, queries"),
+    ("aws",           "AWS                 — S3, Lambda, EC2 basics"),
+    ("react_native",  "React Native        — Mobile apps, Expo"),
+    ("android",       "Android             — Gradle, ADB, APK"),
+    ("springboot",    "Spring Boot         — Java/Kotlin backend"),
+    ("playwright",    "Playwright          — Browser automation/testing"),
+    ("llm",           "LLM / AI tools      — OpenAI, HuggingFace, etc."),
+    ("generic",       "Generic             — Shell, git, file ops (always on)"),
+]
+
+
+def setup_plugins() -> dict:
+    print("📋 Step 4: Frameworks / Plugins select karo...")
+    print()
+    print("  Jinpar aap kaam karte ho unhe select karo.")
+    print("  (Baad mein wizard dobara chalake change kar sakte ho)")
+    print()
+    print("  Available plugins:")
     print()
 
-    if not ask_yes_no("  Stable tunnel setup karna chahoge?"):
-        print("  ⚠ Quick tunnel use hoga — URL har restart par change hogi.\n")
-        return {}
+    for i, (key, label) in enumerate(ALL_PLUGINS, 1):
+        marker = "  [always on]" if key == "generic" else ""
+        print(f"  {i:2}. {label}{marker}")
 
     print()
-    print("  ── Instructions ──")
-    print("  1. https://cloudflare.com par free account banao")
-    print("  2. Terminal mein: cloudflared login")
-    print("     (Browser khulega — allow karo)")
-    print("  3. Tunnel create karo:")
-    print("     cloudflared tunnel create my-mcp")
-    print("  4. Ye URL note karo: <something>.cfargotunnel.com")
-    print()
-    input("  Jab ye sab ho jaye, Enter dabao... ")
+    print("  Numbers enter karo (comma separated), e.g.: 1,2,4")
+    print("  Ya 'all' type karo sab select karne ke liye")
     print()
 
-    tunnel_name = ask("  Tunnel naam kya rakha? (e.g. my-mcp)", "my-mcp")
-    tunnel_url = ask("  Tunnel URL kya mila? (e.g. abc123.cfargotunnel.com)")
+    while True:
+        raw = input("  Aapki choice: ").strip().lower()
+        if not raw:
+            print("  ❌ Kuch to select karo. Enter dabao.")
+            continue
 
-    if not tunnel_url.startswith("https://"):
-        tunnel_url = "https://" + tunnel_url
+        if raw == "all":
+            selected = [key for key, _ in ALL_PLUGINS]
+            break
 
-    print(f"\n  ✅ Saved: {tunnel_url}\n")
-    return {"tunnel_name": tunnel_name, "tunnel_url": tunnel_url}
+        parts = [p.strip() for p in raw.replace(" ", ",").split(",") if p.strip()]
+        valid = []
+        invalid = []
+        for p in parts:
+            if p.isdigit() and 1 <= int(p) <= len(ALL_PLUGINS):
+                valid.append(ALL_PLUGINS[int(p) - 1][0])
+            else:
+                invalid.append(p)
+
+        if invalid:
+            print(f"  ❌ Invalid: {', '.join(invalid)} — sirf numbers 1-{len(ALL_PLUGINS)} enter karo.")
+            continue
+
+        # generic always included
+        if "generic" not in valid:
+            valid.append("generic")
+
+        selected = valid
+        break
+
+    print()
+    print("  Selected plugins:")
+    for key in selected:
+        label = next((l for k, l in ALL_PLUGINS if k == key), key)
+        print(f"    ✅ {label}")
+    print()
+
+    return {"active_plugins": selected}
 
 
-def setup_email():
-    """Optional email setup for OTP."""
-    print("📋 Step 5: Email setup (OTP ke liye)...")
+# ─────────────────────────────────────────────
+# STEP 5 — Project Registry
+# ─────────────────────────────────────────────
+
+def setup_projects() -> dict:
+    print("📋 Step 5: Apne projects register karo...")
+    print()
+    print("  Jab aap AI ko bologe 'ab Vue par kaam karo'")
+    print("  to AI seedha us folder par switch ho jayega.")
+    print()
+    print("  Har project ke liye ek naam aur path batao.")
+    print("  (Naam short rakho — e.g. 'frappe', 'vue', 'app')")
+    print()
+
+    projects = []
+    while True:
+        print(f"  ── Project {len(projects) + 1} ──")
+        path = ask("  Project path (Enter = skip/done)").strip()
+        if not path:
+            if not projects:
+                print("  ⚠ Koi project register nahi kiya. Baad mein `register_project` tool se kar sakte ho.\n")
+            break
+
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.exists():
+            print(f"  ❌ Path exist nahi karta: {resolved} — dobara try karo.\n")
+            continue
+
+        # Auto-detect framework
+        from core.project_detector import detect_framework
+        detected = detect_framework(str(resolved))
+        detected_fw = detected[0]["framework"] if detected else "generic"
+
+        default_name = resolved.name  # folder name as default
+        name = ask(f"  Is project ka naam (detected: {detected_fw})", default_name).strip().lower()
+        name = name.replace(" ", "_")
+
+        projects.append({
+            "name": name,
+            "path": str(resolved),
+            "framework": detected_fw,
+        })
+        print(f"  ✅ Registered: '{name}' → {resolved} ({detected_fw})\n")
+
+        if not ask_yes_no("  Aur project add karna hai?", default=True):
+            break
+
+    if projects:
+        print(f"\n  {len(projects)} project(s) registered:")
+        for p in projects:
+            print(f"    • {p['name']:15} → {p['path']}  [{p['framework']}]")
+        print()
+
+    return {"projects": projects}
+
+
+# ─────────────────────────────────────────────
+# STEP 6 — Email (optional)
+# ─────────────────────────────────────────────
+
+def setup_email() -> dict:
+    print("📋 Step 6: Email setup (OTP ke liye, optional)...")
     print("  Email setup nahi karne par OTP terminal mein print hoga.")
     print()
 
@@ -165,6 +444,10 @@ def setup_email():
     }
 
 
+# ─────────────────────────────────────────────
+# Save + Final steps
+# ─────────────────────────────────────────────
+
 def save_config(config: dict):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(config, indent=2))
@@ -172,35 +455,67 @@ def save_config(config: dict):
 
 def print_next_steps(config: dict):
     tunnel_url = config.get("tunnel_url", "")
-    print("\n" + "="*55)
+    provider = config.get("tunnel_provider", "none")
+    plugins = [p for p in config.get("active_plugins", []) if p != "generic"]
+
+    print("\n" + "=" * 55)
     print("  ✅ SETUP COMPLETE!")
-    print("="*55)
+    print("=" * 55)
     print()
-    print("  Roz server start karo:")
-    print()
+    print("  Server start karo:")
     print("    python main.py start --project /aapka/project/path")
     print()
-    print("  Claude.ai mein add karo:")
-    print("    Settings → Integrations → Custom MCP")
-    print()
-    print("  Local URL:   http://localhost:8080")
+
+    if provider == "tailscale":
+        print("  Tunnel start karo (har baar):")
+        print("    sudo tailscale funnel 8080")
+        print()
+    elif provider == "ngrok":
+        domain = config.get("ngrok_domain", "your-domain.ngrok-free.app")
+        print("  Tunnel start karo (har baar):")
+        print(f"    ngrok http --domain={domain} 8080")
+        print()
+    elif provider == "cloudflare":
+        name = config.get("tunnel_name", "my-mcp")
+        print("  Tunnel start karo (har baar):")
+        print(f"    cloudflared tunnel run {name}")
+        print()
+
+    if provider == "local_only":
+        print("  Claude Code CLI mein add karo:")
+        print("    claude mcp add universal-mcp http://localhost:8080/mcp")
+        print()
+        print("  ⚠ claude.ai web mein LOCAL URL kaam nahi karega.")
+        print("     Web ke liye tunnel setup karo (wizard dobara chalao).")
+    else:
+        print("  Claude.ai web mein add karo:")
+        print("    Settings → Integrations → Custom MCP")
+        print()
+        print("  Local URL:  http://localhost:8080/mcp")
     if tunnel_url:
-        print(f"  Remote URL:  {tunnel_url}")
+        print(f"  Remote URL: {tunnel_url}/mcp")
     print()
+    if plugins:
+        print("  Active plugins: " + ", ".join(plugins))
+        print()
     print("  ✅ Ek baar add karo — hamesha kaam karega!")
-    print("="*55 + "\n")
+    print("=" * 55 + "\n")
 
 
 def run():
     print_banner()
     check_python()
     install_requirements()
-    cf_installed = install_cloudflared()
 
     config = {}
-    if cf_installed:
-        tunnel_cfg = setup_cloudflare_stable()
-        config.update(tunnel_cfg)
+    tunnel_cfg = setup_tunnel()
+    config.update(tunnel_cfg)
+
+    plugin_cfg = setup_plugins()
+    config.update(plugin_cfg)
+
+    project_cfg = setup_projects()
+    config.update(project_cfg)
 
     email_cfg = setup_email()
     config.update(email_cfg)

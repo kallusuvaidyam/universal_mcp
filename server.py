@@ -13,11 +13,10 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.routing import Route
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
 from mcp import types
 
 import auth
-from config import load_project_config
+from config import load_project_config, load_global_config
 from core import shell_executor
 from core import agent_planner
 
@@ -36,8 +35,9 @@ from core import browser_automation
 from core import desktop_control
 from plugins import load_plugin_tools
 
-# Global project path (set at startup)
+# Global project path (set at startup, can be changed per-session via switch_project)
 PROJECT_PATH = os.environ.get("MCP_PROJECT_PATH", os.getcwd())
+ACTIVE_PROJECT_PATH = PROJECT_PATH  # mutable — switch_project tool isse update karta hai
 
 mcp_server = Server("universal-dev-mcp")
 
@@ -52,7 +52,36 @@ ALL_TOOLS = [
     }),
 
     # PROJECT CONTEXT
-    types.Tool(name="project_context", description="Project info load karo (framework, config)", inputSchema={
+    types.Tool(name="switch_project", description=(
+        "Naye project ya framework par switch karo. "
+        "Jab user kisi aur project/framework par kaam karna chahe to HAMESHA pehle yeh tool call karo. "
+        "Sirf 'name' do (e.g. 'vue', 'frappe', 'app') — path automatically dhundha jayega. "
+        "Ya direct 'project_path' bhi de sakte ho."
+    ), inputSchema={
+        "type": "object",
+        "properties": {
+            "session_token": {"type": "string"},
+            "name": {"type": "string", "description": "Project name jaise setup mein register kiya tha (e.g. 'vue', 'frappe', 'myapp')"},
+            "project_path": {"type": "string", "description": "Direct absolute path — sirf tab do jab name se kaam na ho"},
+        },
+        "required": ["session_token"],
+    }),
+    types.Tool(name="register_project", description=(
+        "Naya project registry mein add karo taaki baad mein sirf naam se switch ho sake. "
+        "Wizard ke baad bhi naye projects add karne ke liye yeh use karo."
+    ), inputSchema={
+        "type": "object",
+        "properties": {
+            "session_token": {"type": "string"},
+            "name": {"type": "string", "description": "Short naam (e.g. 'vue', 'frappe', 'myapp')"},
+            "project_path": {"type": "string", "description": "Project ka absolute path"},
+        },
+        "required": ["session_token", "name", "project_path"],
+    }),
+    types.Tool(name="list_projects", description="Saare registered projects aur unka active status dekho", inputSchema={
+        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+    }),
+    types.Tool(name="project_context", description="Current project info load karo (framework, config, active path)", inputSchema={
         "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
     }),
     types.Tool(name="confirm_framework", description="Framework confirm karo aur .mcp-config.json save karo", inputSchema={
@@ -129,7 +158,7 @@ ALL_TOOLS = [
         "type": "object", "properties": {
             "session_token": {"type": "string"},
             "log_path": {"type": "string"},
-            "n": {"type": "integer", "default": 50},
+            "n": {"type": "integer", "default": 20},
             "pattern": {"type": "string", "description": "Optional: sirf matching lines dikhao"}
         }, "required": ["session_token", "log_path"]
     }),
@@ -150,7 +179,7 @@ ALL_TOOLS = [
         "type": "object", "properties": {
             "session_token": {"type": "string"},
             "container": {"type": "string"},
-            "n": {"type": "integer", "default": 50}
+            "n": {"type": "integer", "default": 20}
         }, "required": ["session_token", "container"]
     }),
 
@@ -278,47 +307,107 @@ ALL_TOOLS = [
 
 
     # BROWSER
+    types.Tool(name="browser_launch", description="Browser launch karo (chromium ya firefox)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": "string"},
+            "browser_type": {"type": "string", "default": "chromium"}
+        }, "required": ["session_token"]
+    }),
     types.Tool(name="browser_navigate", description="Browser mein URL kholo", inputSchema={
         "type": "object", "properties": {
             "session_token": {"type": "string"},
-            "url": {"type": "string"}
+            "url": {"type": "string"},
+            "screenshot": {"type": "boolean", "default": True}
         }, "required": ["session_token", "url"]
     }),
-    types.Tool(name="browser_get_content", description="Current page ka text content lo", inputSchema={
+    types.Tool(name="browser_screenshot", description="Browser ka screenshot lo", inputSchema={
         "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
     }),
-    types.Tool(name="browser_click", description="Browser mein element click karo", inputSchema={
+    types.Tool(name="browser_click", description="Browser mein element click karo (CSS selector ya text)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": "string"},
+            "selector": {"type": "string"},
+            "screenshot": {"type": "boolean", "default": True}
+        }, "required": ["session_token", "selector"]
+    }),
+    types.Tool(name="browser_click_at", description="Browser mein exact pixel coordinates par click karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": "string"},
+            "x": {"type": "integer"},
+            "y": {"type": "integer"},
+            "screenshot": {"type": "boolean", "default": True}
+        }, "required": ["session_token", "x", "y"]
+    }),
+    types.Tool(name="browser_type", description="Browser input field mein text type karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": "string"},
+            "selector": {"type": "string"},
+            "text": {"type": "string"},
+            "clear_first": {"type": "boolean", "default": True}
+        }, "required": ["session_token", "selector", "text"]
+    }),
+    types.Tool(name="browser_press_key", description="Browser mein keyboard key press karo (e.g. Enter, Tab, Control+a)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": "string"},
+            "key": {"type": "string"}
+        }, "required": ["session_token", "key"]
+    }),
+    types.Tool(name="browser_get_content", description="Current page ka text content lo (first 8000 chars)", inputSchema={
+        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+    }),
+    types.Tool(name="browser_get_element", description="Page par specific element dhundho aur uska content lo", inputSchema={
         "type": "object", "properties": {
             "session_token": {"type": "string"},
             "selector": {"type": "string"}
         }, "required": ["session_token", "selector"]
     }),
-    types.Tool(name="browser_screenshot", description="Browser screenshot lo", inputSchema={
+    types.Tool(name="browser_wait", description="Page load ya animation ka wait karo, phir screenshot lo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": "string"},
+            "milliseconds": {"type": "integer", "default": 2000}
+        }, "required": ["session_token"]
+    }),
+    types.Tool(name="browser_save_session", description="Current browser session (cookies) disk par save karo", inputSchema={
+        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+    }),
+    types.Tool(name="browser_close", description="Browser band karo, session auto-save hoga", inputSchema={
         "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
     }),
 
     # DESKTOP
-    types.Tool(name="desktop_screenshot", description="Desktop ka screenshot lo", inputSchema={
+    types.Tool(name="desktop_screenshot", description="Desktop ka screenshot lo (GNOME Wayland/XWayland)", inputSchema={
         "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
     }),
-    types.Tool(name="desktop_click", description="Desktop par click karo (x, y coordinates)", inputSchema={
+    types.Tool(name="desktop_open_app", description="Desktop application ya URL kholo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": "string"},
+            "command": {"type": "string"},
+            "args": {"type": "string", "default": ""},
+            "screenshot": {"type": "boolean", "default": True}
+        }, "required": ["session_token", "command"]
+    }),
+    types.Tool(name="desktop_click", description="Desktop par exact coordinates par click karo (XTEST/XWayland)", inputSchema={
         "type": "object", "properties": {
             "session_token": {"type": "string"},
             "x": {"type": "integer"},
-            "y": {"type": "integer"}
+            "y": {"type": "integer"},
+            "button": {"type": "string", "default": "left"}
         }, "required": ["session_token", "x", "y"]
     }),
-    types.Tool(name="desktop_type", description="Keyboard se text type karo", inputSchema={
+    types.Tool(name="desktop_type", description="Focused window mein text type karo (Unicode support)", inputSchema={
         "type": "object", "properties": {
             "session_token": {"type": "string"},
             "text": {"type": "string"}
         }, "required": ["session_token", "text"]
     }),
-    types.Tool(name="desktop_key", description="Keyboard shortcut press karo (e.g. ctrl+c)", inputSchema={
+    types.Tool(name="desktop_key", description="Keyboard shortcut press karo (e.g. ctrl+c, alt+tab, enter)", inputSchema={
         "type": "object", "properties": {
             "session_token": {"type": "string"},
             "keys": {"type": "string"}
         }, "required": ["session_token", "keys"]
+    }),
+    types.Tool(name="desktop_get_windows", description="Saari open windows ki list lo", inputSchema={
+        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
     }),
 ]
 
@@ -328,13 +417,32 @@ async def list_tools() -> list[types.Tool]:
     return ALL_TOOLS + _build_plugin_tool_definitions()
 
 
-def _project_framework() -> str:
+def _project_frameworks() -> list[str]:
+    """Return active plugins — from global config's active_plugins (set by setup_wizard),
+    with fallback to project .mcp-config.json framework key."""
+    global_cfg = load_global_config()
+    active = global_cfg.get("active_plugins")
+    if isinstance(active, list) and active:
+        plugins = [str(f).strip().lower() for f in active if f]
+        if "generic" not in plugins:
+            plugins.append("generic")
+        return plugins
+
+    # Fallback: old single/multi framework config
     cfg = load_project_config(PROJECT_PATH)
-    return cfg.get("framework", "generic")
+    multi = cfg.get("frameworks")
+    if isinstance(multi, list) and multi:
+        return [str(f).strip().lower() for f in multi if f]
+    single = cfg.get("framework", "generic")
+    return [str(single).strip().lower()]
 
 
 def _active_plugin_tools() -> dict:
-    return load_plugin_tools(_project_framework())
+    """Load tools for all active frameworks, merging them together."""
+    all_tools: dict = {}
+    for fw in _project_frameworks():
+        all_tools.update(load_plugin_tools(fw))
+    return all_tools
 
 
 def _json_schema_type(annotation) -> str:
@@ -374,7 +482,7 @@ def _build_plugin_tool_definitions() -> list[types.Tool]:
         definitions.append(
             types.Tool(
                 name=name,
-                description=meta.get("description", f"{_project_framework()} plugin tool"),
+                description=meta.get("description", "plugin tool"),
                 inputSchema={
                     "type": "object",
                     "properties": properties,
@@ -418,7 +526,11 @@ def _check_auth(args: dict) -> str | None:
 
 @mcp_server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    def r(text: str) -> list[types.TextContent]:
+    global ACTIVE_PROJECT_PATH
+
+    def r(text) -> list:
+        if isinstance(text, dict) and text.get("_image"):
+            return [types.ImageContent(type="image", data=text["data"], mimeType=f"image/{text.get('format', 'jpeg')}")]
         return [types.TextContent(type="text", text=str(text))]
 
     # ── AUTH TOOL (no session needed) ──
@@ -437,11 +549,73 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     if err:
         return r(err)
 
-    pp = PROJECT_PATH  # project path
+    pp = ACTIVE_PROJECT_PATH  # uses current active path (can be changed by switch_project)
 
     # ── TOOL DISPATCH ──
     try:
-        if name == "project_context":
+        if name == "switch_project":
+            proj_name = arguments.get("name", "").strip().lower()
+            proj_path = arguments.get("project_path", "").strip()
+
+            # Name-based lookup from registry
+            if proj_name and not proj_path:
+                global_cfg = load_global_config()
+                registry = global_cfg.get("projects", [])
+                # Match by name or framework
+                match = next(
+                    (p for p in registry if p.get("name", "").lower() == proj_name
+                     or p.get("framework", "").lower() == proj_name),
+                    None
+                )
+                if not match:
+                    names = [p.get("name") for p in registry]
+                    return r(
+                        f"❌ '{proj_name}' registry mein nahi mila.\n"
+                        f"Registered projects: {', '.join(names) if names else 'koi nahi'}\n\n"
+                        f"Naya project register karne ke liye `register_project` tool use karo."
+                    )
+                proj_path = match["path"]
+
+            if not proj_path:
+                return r("❌ 'name' ya 'project_path' mein se koi ek do.")
+            if not Path(proj_path).exists():
+                return r(f"❌ Path exist nahi karta: {proj_path}")
+
+            ACTIVE_PROJECT_PATH = proj_path
+            ctx = project_context.get_project_context(proj_path)
+            return r(f"✅ Project switched!\nActive path: {proj_path}\n\n{ctx}")
+
+        elif name == "register_project":
+            reg_name = arguments.get("name", "").strip().lower().replace(" ", "_")
+            reg_path = arguments.get("project_path", "").strip()
+            if not reg_name or not reg_path:
+                return r("❌ name aur project_path dono chahiye.")
+            if not Path(reg_path).exists():
+                return r(f"❌ Path exist nahi karta: {reg_path}")
+            detected = project_detector.detect_framework(reg_path)
+            fw = detected[0]["framework"] if detected else "generic"
+            global_cfg = load_global_config()
+            registry = global_cfg.get("projects", [])
+            registry = [p for p in registry if p.get("name") != reg_name]  # update if exists
+            registry.append({"name": reg_name, "path": reg_path, "framework": fw})
+            global_cfg["projects"] = registry
+            from config import save_global_config
+            save_global_config(global_cfg)
+            return r(f"✅ Registered: '{reg_name}' → {reg_path} [{fw}]\n\nAb 'switch_project(name=\"{reg_name}\")' se switch kar sakte ho.")
+
+        elif name == "list_projects":
+            global_cfg = load_global_config()
+            registry = global_cfg.get("projects", [])
+            if not registry:
+                return r("Koi project registered nahi hai.\n`register_project` tool se add karo.")
+            lines = ["📋 Registered Projects:\n"]
+            for p in registry:
+                active_marker = " ◀ ACTIVE" if p["path"] == ACTIVE_PROJECT_PATH else ""
+                lines.append(f"  • {p['name']:15} [{p['framework']:10}] → {p['path']}{active_marker}")
+            lines.append(f"\n💡 Switch karne ke liye: switch_project(name='<naam>')")
+            return r("\n".join(lines))
+
+        elif name == "project_context":
             return r(project_context.get_project_context(pp))
 
         elif name == "confirm_framework":
@@ -580,24 +754,50 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 arguments.get("framework_hint"),
             ))
 
+        elif name == "browser_launch":
+            return r(browser_automation.browser_launch(arguments.get("browser_type", "chromium")))
+
         elif name == "browser_navigate":
-            return r(browser_automation.browser_navigate(arguments["url"]))
-
-
-        elif name == "browser_get_content":
-            return r(browser_automation.browser_get_content())
-
-        elif name == "browser_click":
-            return r(browser_automation.browser_click(arguments["selector"]))
+            return r(browser_automation.browser_navigate(arguments["url"], arguments.get("screenshot", True)))
 
         elif name == "browser_screenshot":
             return r(browser_automation.browser_screenshot())
 
+        elif name == "browser_click":
+            return r(browser_automation.browser_click(arguments["selector"], arguments.get("screenshot", True)))
+
+        elif name == "browser_click_at":
+            return r(browser_automation.browser_click_at(arguments["x"], arguments["y"], arguments.get("screenshot", True)))
+
+        elif name == "browser_type":
+            return r(browser_automation.browser_type(arguments["selector"], arguments["text"], arguments.get("clear_first", True)))
+
+        elif name == "browser_press_key":
+            return r(browser_automation.browser_press_key(arguments["key"]))
+
+        elif name == "browser_get_content":
+            return r(browser_automation.browser_get_content())
+
+        elif name == "browser_get_element":
+            return r(browser_automation.browser_get_element(arguments["selector"]))
+
+        elif name == "browser_wait":
+            return r(browser_automation.browser_wait(arguments.get("milliseconds", 2000)))
+
+        elif name == "browser_save_session":
+            return r(browser_automation.browser_save_session())
+
+        elif name == "browser_close":
+            return r(browser_automation.browser_close())
+
         elif name == "desktop_screenshot":
             return r(desktop_control.desktop_screenshot())
 
+        elif name == "desktop_open_app":
+            return r(desktop_control.desktop_open_app(arguments["command"], arguments.get("args", ""), arguments.get("screenshot", True)))
+
         elif name == "desktop_click":
-            return r(desktop_control.desktop_click(arguments["x"], arguments["y"]))
+            return r(desktop_control.desktop_click(arguments["x"], arguments["y"], arguments.get("button", "left")))
 
         elif name == "desktop_type":
             return r(desktop_control.desktop_type(arguments["text"]))
@@ -605,9 +805,16 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         elif name == "desktop_key":
             return r(desktop_control.desktop_key(arguments["keys"]))
 
+        elif name == "desktop_get_windows":
+            return r(desktop_control.desktop_get_windows())
+
         else:
+            # Framework switch check — warn AI before executing plugin tool
+            switch_warning = project_context.check_framework_switch(pp)
             plugin_result = _call_plugin_tool(name, arguments, pp)
             if plugin_result is not None:
+                if switch_warning:
+                    return r(f"{switch_warning}\n\n{'─'*50}\n\n{plugin_result}")
                 return r(plugin_result)
             return r(f"❌ Unknown tool: {name}")
 
@@ -616,35 +823,35 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
 
 # ─────────────────────────────────────────────
-# ASGI APP SETUP
+# ASGI APP SETUP — Streamable HTTP transport
 # ─────────────────────────────────────────────
-sse_transport = SseServerTransport("/messages/")
 
+def _build_app() -> Starlette:
+    import contextlib
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from mcp.server.fastmcp.server import StreamableHTTPASGIApp
 
-async def sse_handler(request):
-    async with sse_transport.connect_sse(
-        request.scope, request.receive, request._send
-    ) as (read_stream, write_stream):
-        await mcp_server.run(
-            read_stream, write_stream,
-            mcp_server.create_initialization_options()
-        )
-
-
-async def messages_handler(request):
-    await sse_transport.handle_post_message(
-        request.scope, request.receive, request._send
+    session_manager = StreamableHTTPSessionManager(
+        app=mcp_server,
+        json_response=False,
+        stateless=True,
     )
+    asgi_app = StreamableHTTPASGIApp(session_manager)
 
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        async with session_manager.run():
+            yield
 
-app = Starlette(routes=[
-    Route("/sse", endpoint=sse_handler),
-    Route("/messages/", endpoint=messages_handler, methods=["POST"]),
-])
+    return Starlette(
+        routes=[Route("/mcp", endpoint=asgi_app, methods=["GET", "POST", "DELETE"])],
+        lifespan=lifespan,
+    )
 
 
 def run_server(project_path: str, port: int):
     global PROJECT_PATH
     PROJECT_PATH = project_path
     os.environ["MCP_PROJECT_PATH"] = project_path
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    app = _build_app()
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

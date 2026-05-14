@@ -98,6 +98,9 @@ def is_valid_session(token: str) -> bool:
 
 def auth_required(token: str) -> str | None:
     """Returns error string if not authenticated, None if ok."""
+    cfg = load_global_config()
+    if not cfg.get("require_auth", True):
+        return None  # auth disabled
     if not is_valid_session(token):
         return "❌ Session invalid. Pehle verify_session tool use karo."
     return None

@@ -93,8 +93,21 @@ def load_frappe_config(project_path: str) -> dict:
     return merged
 
 
-def detect_bench_path(project_path: str, config: dict) -> Path:
-    explicit = config.get("bench_path")
+def _find_bench_in_array(benches: list, bench_id: str) -> dict | None:
+    """Find a bench dict from benches[] array by id. If bench_id empty, return first."""
+    if not benches:
+        return None
+    if not bench_id:
+        return benches[0]
+    for b in benches:
+        if isinstance(b, dict) and b.get("id") == bench_id:
+            return b
+    return benches[0]  # fallback to first if not found
+
+
+def detect_bench_path(project_path: str, config: dict, bench_cfg: dict | None = None) -> Path:
+    # bench_cfg from benches[] array takes priority
+    explicit = (bench_cfg or {}).get("path") or config.get("bench_path")
     if explicit:
         return Path(explicit).expanduser().resolve()
 
@@ -105,8 +118,8 @@ def detect_bench_path(project_path: str, config: dict) -> Path:
     return current
 
 
-def guess_bench_cmd(bench_path: Path, config: dict) -> str:
-    explicit = str(config.get("bench_cmd", "")).strip()
+def guess_bench_cmd(bench_path: Path, config: dict, bench_cfg: dict | None = None) -> str:
+    explicit = str((bench_cfg or {}).get("bench_cmd") or config.get("bench_cmd", "")).strip()
     if explicit:
         return explicit
 
@@ -152,16 +165,30 @@ def resolve_site_credentials(config: dict, site: str) -> SiteCredentials:
 
 def resolve_context(project_path: str, bench_id: str = "", site: str = "") -> BenchContext:
     config = load_frappe_config(project_path)
-    bench_path = detect_bench_path(project_path, config)
-    resolved_bench_id = (bench_id or str(config.get("bench_id", "")).strip() or bench_path.name).strip()
+
+    # Support both new multi-bench format (benches[] array) and old flat format
+    benches_list = config.get("benches")
+    bench_cfg: dict | None = None
+
+    if isinstance(benches_list, list) and benches_list:
+        # New format: benches[] array like frappe-mcp
+        bench_cfg = _find_bench_in_array(benches_list, bench_id)
+        resolved_bench_id = (bench_cfg or {}).get("id") or bench_id or "default"
+        node_version = str((bench_cfg or {}).get("node_version", "")).strip() or None
+    else:
+        # Old flat format: backward compatible
+        resolved_bench_id = (bench_id or str(config.get("bench_id", "")).strip()).strip()
+        node_version = str(config.get("node_version", "")).strip() or None
+
+    bench_path = detect_bench_path(project_path, config, bench_cfg)
     resolved_site = (site or str(config.get("site", "")).strip()).strip()
 
     return BenchContext(
         project_path=project_path,
-        bench_id=resolved_bench_id,
+        bench_id=resolved_bench_id or bench_path.name,
         bench_path=bench_path,
-        bench_cmd=guess_bench_cmd(bench_path, config),
-        node_version=str(config.get("node_version")).strip() if config.get("node_version") else None,
+        bench_cmd=guess_bench_cmd(bench_path, config, bench_cfg),
+        node_version=node_version,
         site=resolved_site,
         site_credentials=resolve_site_credentials(config, resolved_site) if resolved_site else SiteCredentials(),
         config=config,

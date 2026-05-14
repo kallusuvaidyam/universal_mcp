@@ -12,6 +12,20 @@ import threading
 import time
 from pathlib import Path
 
+# Auto-switch to python3.10 if current python is missing uvicorn/mcp
+def _check_deps():
+    try:
+        import uvicorn  # noqa: F401
+        import mcp  # noqa: F401
+    except ImportError:
+        import shutil, subprocess
+        py310 = shutil.which("python3.10")
+        if py310 and py310 != sys.executable:
+            os.execv(py310, [py310] + sys.argv)
+        sys.exit("❌ Missing dependencies: uvicorn, mcp. Run: pip install -r requirements.txt")
+
+_check_deps()
+
 
 def print_banner(project_path: str, port: int, local_url: str, tunnel_url: str = None):
     print("\n" + "="*55)
