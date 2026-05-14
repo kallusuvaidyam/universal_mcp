@@ -16,7 +16,7 @@ from mcp.server import Server
 from mcp import types
 
 import auth
-from config import load_project_config, load_global_config
+from config import load_project_config, load_global_config, load_state, save_state
 from core import shell_executor
 from core import agent_planner
 
@@ -37,7 +37,8 @@ from plugins import load_plugin_tools
 
 # Global project path (set at startup, can be changed per-session via switch_project)
 PROJECT_PATH = os.environ.get("MCP_PROJECT_PATH", os.getcwd())
-ACTIVE_PROJECT_PATH = PROJECT_PATH  # mutable — switch_project tool isse update karta hai
+# Restore last active path from state.json, fallback to PROJECT_PATH
+ACTIVE_PROJECT_PATH = load_state().get("active_project_path", PROJECT_PATH)
 
 mcp_server = Server("universal-dev-mcp")
 
@@ -79,6 +80,17 @@ ALL_TOOLS = [
         "required": ["session_token", "name", "project_path"],
     }),
     types.Tool(name="list_projects", description="Saare registered projects aur unka active status dekho", inputSchema={
+        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+    }),
+    types.Tool(name="deregister_project", description="Registry se project hataao (path delete nahi hoga, sirf naam mapping remove hogi)", inputSchema={
+        "type": "object",
+        "properties": {
+            "session_token": {"type": "string"},
+            "name": {"type": "string", "description": "Project naam jo remove karna hai"},
+        },
+        "required": ["session_token", "name"],
+    }),
+    types.Tool(name="reload_plugins", description="active_plugins config se nayi frameworks load karo bina server restart kiye", inputSchema={
         "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
     }),
     types.Tool(name="project_context", description="Current project info load karo (framework, config, active path)", inputSchema={
@@ -582,6 +594,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 return r(f"❌ Path exist nahi karta: {proj_path}")
 
             ACTIVE_PROJECT_PATH = proj_path
+            save_state({"active_project_path": proj_path})
             ctx = project_context.get_project_context(proj_path)
             return r(f"✅ Project switched!\nActive path: {proj_path}\n\n{ctx}")
 
@@ -614,6 +627,30 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 lines.append(f"  • {p['name']:15} [{p['framework']:10}] → {p['path']}{active_marker}")
             lines.append(f"\n💡 Switch karne ke liye: switch_project(name='<naam>')")
             return r("\n".join(lines))
+
+        elif name == "deregister_project":
+            reg_name = arguments.get("name", "").strip().lower()
+            if not reg_name:
+                return r("❌ name do.")
+            global_cfg = load_global_config()
+            registry = global_cfg.get("projects", [])
+            new_registry = [p for p in registry if p.get("name") != reg_name]
+            if len(new_registry) == len(registry):
+                return r(f"❌ '{reg_name}' registry mein nahi mila.")
+            global_cfg["projects"] = new_registry
+            from config import save_global_config
+            save_global_config(global_cfg)
+            return r(f"✅ '{reg_name}' registry se remove kar diya.\nBaaki projects: {[p['name'] for p in new_registry]}")
+
+        elif name == "reload_plugins":
+            old_fw = _project_frameworks()
+            global_cfg = load_global_config()
+            new_fw = global_cfg.get("active_plugins", ["generic"])
+            return r(
+                f"✅ Plugins reloaded.\n"
+                f"Active plugins: {', '.join(new_fw)}\n\n"
+                f"Note: Naye plugin tools next tool call se available honge."
+            )
 
         elif name == "project_context":
             return r(project_context.get_project_context(pp))
@@ -828,6 +865,9 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
 def _build_app() -> Starlette:
     import contextlib
+    import json as _json
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from mcp.server.fastmcp.server import StreamableHTTPASGIApp
 
@@ -838,13 +878,26 @@ def _build_app() -> Starlette:
     )
     asgi_app = StreamableHTTPASGIApp(session_manager)
 
+    async def health_endpoint(request: Request):
+        cfg = load_global_config()
+        return JSONResponse({
+            "status": "ok",
+            "active_project": ACTIVE_PROJECT_PATH,
+            "active_plugins": _project_frameworks(),
+            "tunnel_provider": cfg.get("tunnel_provider", "none"),
+            "tunnel_url": cfg.get("tunnel_url", ""),
+        })
+
     @contextlib.asynccontextmanager
     async def lifespan(_app):
         async with session_manager.run():
             yield
 
     return Starlette(
-        routes=[Route("/mcp", endpoint=asgi_app, methods=["GET", "POST", "DELETE"])],
+        routes=[
+            Route("/mcp", endpoint=asgi_app, methods=["GET", "POST", "DELETE"]),
+            Route("/health", endpoint=health_endpoint, methods=["GET"]),
+        ],
         lifespan=lifespan,
     )
 

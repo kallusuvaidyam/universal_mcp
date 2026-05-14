@@ -298,6 +298,12 @@ ALL_PLUGINS = [
     ("springboot",    "Spring Boot         — Java/Kotlin backend"),
     ("playwright",    "Playwright          — Browser automation/testing"),
     ("llm",           "LLM / AI tools      — OpenAI, HuggingFace, etc."),
+    ("angular",       "Angular             — TypeScript SPA framework"),
+    ("nuxt",          "Nuxt.js             — Vue-based SSR framework"),
+    ("nextjs",        "Next.js             — React-based SSR framework"),
+    ("rag",           "RAG / Vector DB     — Embeddings, FAISS, Chroma"),
+    ("cloud",         "Cloud / DevOps      — GCP, Azure, Terraform basics"),
+    ("vscode",        "VS Code             — Extensions, workspace settings"),
     ("generic",       "Generic             — Shell, git, file ops (always on)"),
 ]
 

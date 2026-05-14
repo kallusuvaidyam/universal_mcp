@@ -4,6 +4,7 @@ from pathlib import Path
 GLOBAL_CONFIG_DIR = Path.home() / ".universal-dev-mcp"
 GLOBAL_CONFIG_FILE = GLOBAL_CONFIG_DIR / "config.json"
 GLOBAL_MCP_CONFIG_FILE = GLOBAL_CONFIG_DIR / "mcp-config.json"  # plugin/framework config
+STATE_FILE = GLOBAL_CONFIG_DIR / "state.json"  # runtime state (active project path, etc.)
 COMMON_PROJECT_KEYS = {
     "_comment",
     "_note",
@@ -28,6 +29,20 @@ def load_global_config() -> dict:
 def save_global_config(config: dict):
     GLOBAL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     GLOBAL_CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def save_state(state: dict):
+    GLOBAL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
 def _normalize_project_config(raw_config: dict) -> dict:

@@ -302,6 +302,29 @@ Score guidelines: unique config files = 50, source dirs = 20-30, common files wi
 
 ---
 
+## Project Registry Management
+
+Projects registry `~/.universal-dev-mcp/config.json` ke `projects` array mein hoti hai. Registry sirf naam → path mapping hai — actual folders se koi lena dena nahi.
+
+### Kab kya karo
+
+| User kya bole | AI kya kare |
+|---------------|-------------|
+| "vue project hata do", "remove karo", "band karo" | `deregister_project(name="vue")` |
+| "project move kar diya /new/path par" | `deregister_project` + `register_project` with new path |
+| "galat path register hua tha" | `deregister_project` + `register_project` with correct path |
+| "konse projects hain" | `list_projects()` |
+| "naya project add karo" | `register_project(name=..., project_path=...)` |
+
+### Rules
+
+- `deregister_project` sirf config entry hatata hai — **actual folder kabhi delete mat karo**
+- Folder delete/move karna ho to `shell_run` use karo, aur pehle user se confirm lo
+- Path change hone par hamesha deregister + re-register karo — sirf register karne se duplicate entries ban jaati hain
+- Agar user "project khatam ho gaya" bole to deregister karo aur confirm karo ki folder safe hai
+
+---
+
 ## Memory Usage Guidelines for Claude
 
 Use memory tools to retain context across sessions:

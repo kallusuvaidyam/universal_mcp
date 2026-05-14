@@ -7,6 +7,7 @@ Ported from frappe-mcp with fastmcp.Image removed — returns base64 dict instea
 import base64
 import os
 import threading
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -17,7 +18,8 @@ _context = None
 _page = None
 _current_browser_type: str = "chromium"
 
-_SESSIONS_DIR = "/tmp/universal_mcp_sessions"
+# Persistent location — survives reboots unlike /tmp
+_SESSIONS_DIR = str(Path.home() / ".universal-dev-mcp" / "browser_sessions")
 _SESSION_FILE = f"{_SESSIONS_DIR}/browser_state.json"
 
 _current_workflow = []
