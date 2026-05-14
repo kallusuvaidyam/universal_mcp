@@ -437,17 +437,37 @@ def setup_email() -> dict:
 
     smtp_host = ask("  SMTP Host (e.g. smtp.gmail.com)", "smtp.gmail.com")
     smtp_port = ask("  SMTP Port", "587")
-    from_email = ask("  Email address")
+    from_email = ask("  Sender email (jo bhejega OTP)")
     password = ask("  Email password / App password")
 
-    return {
-        "email": {
-            "smtp_host": smtp_host,
-            "smtp_port": int(smtp_port),
-            "from_email": from_email,
-            "smtp_password": password,
-        }
+    print()
+    print("  OTP kis email par receive karna chahte ho?")
+    print("  (Enter dabao same email rakhne ke liye)")
+    to_email = ask("  Receiver email", from_email).strip() or from_email
+
+    # Test connection
+    print()
+    print("  Email connection test kar raha hoon...")
+    try:
+        import smtplib
+        with smtplib.SMTP(smtp_host, int(smtp_port)) as server:
+            server.starttls()
+            server.login(from_email, password)
+        print("  ✅ Email connection successful!\n")
+    except Exception as e:
+        print(f"  ⚠ Email test failed: {e}")
+        print("  OTP terminal mein print hoga as fallback.\n")
+
+    cfg = {
+        "smtp_host": smtp_host,
+        "smtp_port": int(smtp_port),
+        "from_email": from_email,
+        "smtp_password": password,
     }
+    if to_email != from_email:
+        cfg["to_email"] = to_email
+
+    return {"email": cfg}
 
 
 # ─────────────────────────────────────────────

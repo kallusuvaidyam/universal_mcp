@@ -325,6 +325,17 @@ Projects registry `~/.universal-dev-mcp/config.json` ke `projects` array mein ho
 
 ---
 
+## Activity Logging
+
+Every `file_write`, `shell_run`, `git_commit`, and plugin tool call is automatically logged with:
+- Developer name (set at `verify_session` time via `developer_name` param)
+- Git branch at time of action
+- Timestamp
+
+Use `my_activity` to see your own log, `get_activity_log` to see all developers.
+
+---
+
 ## Memory Usage Guidelines for Claude
 
 Use memory tools to retain context across sessions:

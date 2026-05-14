@@ -33,6 +33,7 @@ from core import project_detector
 from core import memory_manager
 from core import browser_automation
 from core import desktop_control
+from core import activity_logger
 from plugins import load_plugin_tools
 
 # Global project path (set at startup, can be changed per-session via switch_project)
@@ -48,8 +49,13 @@ mcp_server = Server("universal-dev-mcp")
 
 ALL_TOOLS = [
     # AUTH
-    types.Tool(name="verify_session", description="OTP verify karo — pehle ye tool use karo", inputSchema={
-        "type": "object", "properties": {"code": {"type": "string", "description": "6-digit OTP code. Empty rakhne par OTP bheja jayega."}}, "required": []
+    types.Tool(name="verify_session", description="OTP verify karo — pehle ye tool use karo. developer_name optional hai — activity log mein aapka naam aayega.", inputSchema={
+        "type": "object",
+        "properties": {
+            "code": {"type": "string", "description": "6-digit OTP code. Empty rakhne par OTP bheja jayega."},
+            "developer_name": {"type": "string", "description": "Aapka naam (e.g. 'rahul', 'priya') — activity log mein dikhega"}
+        },
+        "required": []
     }),
 
     # PROJECT CONTEXT
@@ -421,6 +427,28 @@ ALL_TOOLS = [
     types.Tool(name="desktop_get_windows", description="Saari open windows ki list lo", inputSchema={
         "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
     }),
+
+    # ACTIVITY LOG
+    types.Tool(name="get_activity_log", description="Saare developers ki activity log dekho — kaun, kab, kya kiya (branch aur time filter supported)", inputSchema={
+        "type": "object",
+        "properties": {
+            "session_token": {"type": "string"},
+            "developer": {"type": "string", "description": "Filter by developer name (optional)"},
+            "branch": {"type": "string", "description": "Filter by git branch (optional)"},
+            "since": {"type": "string", "description": "Time range: '1h', '24h', 'today', '7d', 'all' (default: 24h)", "default": "24h"},
+            "limit": {"type": "integer", "description": "Max results (default: 50)", "default": 50}
+        },
+        "required": ["session_token"]
+    }),
+    types.Tool(name="my_activity", description="Meri apni activity dekho — is session ke developer ki sari actions", inputSchema={
+        "type": "object",
+        "properties": {
+            "session_token": {"type": "string"},
+            "since": {"type": "string", "description": "Time range: '1h', '24h', 'today', '7d', 'all' (default: 24h)", "default": "24h"},
+            "limit": {"type": "integer", "default": 50}
+        },
+        "required": ["session_token"]
+    }),
 ]
 
 
@@ -548,10 +576,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     # ── AUTH TOOL (no session needed) ──
     if name == "verify_session":
         code = arguments.get("code", "").strip()
+        dev_name_arg = arguments.get("developer_name", "").strip()
         if not code:
             msg = auth.request_otp()
             return r(f"OTP bheja gaya. {msg}\n\nverify_session(code='XXXXXX') call karo.")
-        result = auth.verify_otp(code)
+        result = auth.verify_otp(code, dev_name_arg)
         if result["success"]:
             return r(f"✅ {result['message']}\n\nSession Token: {result['session_token']}\n\nAb ye token saare tools mein pass karo.")
         return r(f"❌ {result['message']}")
@@ -562,6 +591,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         return r(err)
 
     pp = ACTIVE_PROJECT_PATH  # uses current active path (can be changed by switch_project)
+    _session_data = auth._sessions.get(arguments.get("session_token", ""), {})
+    dev_name = _session_data.get("developer_name", "unknown")
 
     # ── TOOL DISPATCH ──
     try:
@@ -661,13 +692,20 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             return r(project_context.confirm_framework(pp, fw, extra))
 
         elif name == "shell_run":
-            return r(shell_executor.shell_run(arguments["command"], pp, arguments.get("timeout", 60)))
+            result = shell_executor.shell_run(arguments["command"], pp, arguments.get("timeout", 60))
+            activity_logger.log_activity(pp, dev_name, "shell_run", arguments["command"][:80])
+            if result.startswith("❌") or "[Exit code:" in result:
+                scope = arguments["command"].split()[0] if arguments["command"].split() else "shell"
+                memory_manager.debug_memory_add(pp, dev_name, scope, result[:500], arguments["command"])
+            return r(result)
 
         elif name == "file_read":
             return r(file_manager.file_read(pp, arguments["path"]))
 
         elif name == "file_write":
-            return r(file_manager.file_write(pp, arguments["path"], arguments["content"]))
+            result = file_manager.file_write(pp, arguments["path"], arguments["content"])
+            activity_logger.log_activity(pp, dev_name, "file_write", f"Wrote: {arguments['path']}")
+            return r(result)
 
         elif name == "file_list":
             return r(file_manager.file_list(pp, arguments.get("path", ".")))
@@ -684,6 +722,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             result = git_ops.git_commit(pp, arguments["message"])
             if arguments.get("push"):
                 result += "\n\n" + git_ops.git_push(pp)
+            activity_logger.log_activity(pp, dev_name, "git_commit", arguments["message"][:80])
             return r(result)
 
         elif name == "env_read":
@@ -845,11 +884,29 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         elif name == "desktop_get_windows":
             return r(desktop_control.desktop_get_windows())
 
+        elif name == "get_activity_log":
+            return r(activity_logger.get_activity_log(
+                pp,
+                developer=arguments.get("developer"),
+                branch=arguments.get("branch"),
+                since=arguments.get("since", "24h"),
+                limit=arguments.get("limit", 50),
+            ))
+
+        elif name == "my_activity":
+            return r(activity_logger.get_activity_log(
+                pp,
+                developer=dev_name,
+                since=arguments.get("since", "24h"),
+                limit=arguments.get("limit", 50),
+            ))
+
         else:
             # Framework switch check — warn AI before executing plugin tool
             switch_warning = project_context.check_framework_switch(pp)
             plugin_result = _call_plugin_tool(name, arguments, pp)
             if plugin_result is not None:
+                activity_logger.log_activity(pp, dev_name, name, name)
                 if switch_warning:
                     return r(f"{switch_warning}\n\n{'─'*50}\n\n{plugin_result}")
                 return r(plugin_result)

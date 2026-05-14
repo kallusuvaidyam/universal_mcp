@@ -19,32 +19,38 @@ def generate_otp() -> str:
 
 
 def send_otp(otp: str) -> str:
-    """Send OTP via email or print to console as fallback."""
     cfg = load_global_config()
     email_cfg = cfg.get("email", {})
 
-    if email_cfg.get("smtp_host") and email_cfg.get("from_email"):
+    smtp_host = email_cfg.get("smtp_host")
+    from_email = email_cfg.get("from_email")
+    to_email = email_cfg.get("to_email") or from_email  # allow separate recipient
+    smtp_password = email_cfg.get("smtp_password")
+
+    if smtp_host and from_email and smtp_password:
         try:
             msg = MIMEText(f"Your Universal Dev MCP OTP is: {otp}\n\nValid for 5 minutes.")
             msg["Subject"] = "Universal Dev MCP - OTP"
-            msg["From"] = email_cfg["from_email"]
-            msg["To"] = email_cfg["from_email"]
+            msg["From"] = from_email
+            msg["To"] = to_email
 
-            with smtplib.SMTP(email_cfg["smtp_host"], email_cfg.get("smtp_port", 587)) as server:
+            with smtplib.SMTP(smtp_host, email_cfg.get("smtp_port", 587)) as server:
                 server.starttls()
-                server.login(email_cfg["from_email"], email_cfg["smtp_password"])
-                server.sendmail(email_cfg["from_email"], email_cfg["from_email"], msg.as_string())
+                server.login(from_email, smtp_password)
+                server.sendmail(from_email, to_email, msg.as_string())
 
-            return f"OTP sent to {email_cfg['from_email']}. Check your inbox."
+            return f"OTP sent to {to_email}. Check your inbox."
         except Exception as e:
-            pass
+            # Email failed — warn clearly and fall through to console
+            print(f"\n  ⚠ Email send failed: {e}")
+            print(f"  Falling back to console OTP.\n")
 
     # Console fallback — print OTP directly
     print(f"\n{'='*40}")
     print(f"  YOUR OTP: {otp}")
     print(f"  (Valid for 5 minutes)")
     print(f"{'='*40}\n")
-    return "OTP printed in your server terminal. Check it there."
+    return "OTP terminal mein print hua hai. Server terminal mein dekho."
 
 
 def request_otp() -> str:
@@ -55,7 +61,7 @@ def request_otp() -> str:
     return send_otp(otp)
 
 
-def verify_otp(code: str) -> dict:
+def verify_otp(code: str, developer_name: str = "") -> dict:
     cfg = load_global_config()
     email = cfg.get("email", {}).get("from_email", "developer")
     pending = _pending_otps.get(email)
@@ -76,10 +82,11 @@ def verify_otp(code: str) -> dict:
     # Valid — create session
     import secrets
     token = secrets.token_hex(16)
-    _sessions[token] = {"email": email, "created_at": time.time()}
+    dev = developer_name.strip() or email.split("@")[0]
+    _sessions[token] = {"email": email, "developer_name": dev, "created_at": time.time()}
     del _pending_otps[email]
 
-    return {"success": True, "session_token": token, "message": "Session shuru! Token saare tools mein pass karo."}
+    return {"success": True, "session_token": token, "message": f"Session shuru! Naam: {dev}. Token saare tools mein pass karo."}
 
 
 def is_valid_session(token: str) -> bool:
