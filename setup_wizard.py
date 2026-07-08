@@ -11,7 +11,11 @@ import platform
 import shutil
 from pathlib import Path
 
+# Path.home():- /home/kk/
+# Path.home() / ".universal-dev-mcp":- /home/kk/.universal-dev-mcp
 CONFIG_DIR = Path.home() / ".universal-dev-mcp"
+
+# /home/kk/.universal-dev-mcp/config.json
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
@@ -19,8 +23,8 @@ def print_banner():
     print("\n" + "=" * 55)
     print("  Universal Dev MCP — Setup Wizard")
     print("=" * 55)
-    print("  Yeh wizard aapka ek baar ka setup karega.")
-    print("  Baad mein sirf: python main.py start")
+    print("  This wizard will perform a one-time setup.")
+    print("  Afterward, simply run: `python main.py`")
     print("=" * 55 + "\n")
 
 
@@ -32,6 +36,7 @@ def ask(prompt: str, default: str = "") -> str:
 
 
 def ask_yes_no(prompt: str, default: bool = True) -> bool:
+    # default = True means default answer is Yes, so suffix should be [Y/n]
     suffix = "[Y/n]" if default else "[y/N]"
     val = input(f"  {prompt} {suffix}: ").strip().lower()
     if not val:
@@ -45,7 +50,7 @@ def ask_choice(prompt: str, options: list[tuple[str, str]]) -> str:
     for i, (key, label) in enumerate(options, 1):
         print(f"  {i}. {label}")
     while True:
-        val = input(f"\n  Apna choice enter karo (1-{len(options)}): ").strip()
+        val = input(f"\n  Please enter your choice (1-{len(options)}): ").strip()
         if val.isdigit() and 1 <= int(val) <= len(options):
             return options[int(val) - 1][0]
         print(f"  ❌ Galat input. 1 se {len(options)} ke beech number enter karo.")
@@ -57,10 +62,16 @@ def ask_choice(prompt: str, options: list[tuple[str, str]]) -> str:
 
 def check_python():
     print("📋 Step 1: Python check...")
+    # sys:- Python ka built-in module hai.
+    # sys.version = Python version string
+    # sys.version_info:- Python version ko structured form me access karne ka object (jisse major, minor, micro alag-alag milte hain)
+    # sys.platform:- linux, windows etc.
+    # sys.argv:- jab user koi command run karta hai to usko ye store karta hai list me word wise split karke ex. command:- python3 main.py start, output:- [main.py, start]
     v = sys.version_info
     if v.major < 3 or (v.major == 3 and v.minor < 10):
-        print(f"  ❌ Python 3.10+ chahiye. Aapke paas: {v.major}.{v.minor}")
-        sys.exit(1)
+        print(f"  ❌ We should Python 3.10+. You have: {v.major}.{v.minor}")
+        # sys.exit():- programm close karna, sys.exit(1):- matlab programt code set karna, 0-success, 1-something error
+        sys.exit(1) 
     print(f"  ✅ Python {v.major}.{v.minor} — OK\n")
 
 
@@ -70,9 +81,26 @@ def check_python():
 
 def install_requirements():
     print("📋 Step 2: Dependencies install karo...")
+    # __file__:- Returns the current Python file's path. in str
+    # Path(__file__):- Returns the current Python file's path. in Path object
+    # Path(__file__).parent:- Returns the current Python file's path parent directory. in Path object
+    # Path(__file__).parent / "requirements.txt":- Create a new Path in the same directory as the current file, pointing to "requirements.txt" but not checking if it exists. in Path object
     req_file = Path(__file__).parent / "requirements.txt"
+    # subprocess.run:- Execute an external command from Python. Here, it runs pip to install dependencies from the requirements.txt file.
     result = subprocess.run(
+        # sys.executable:- like this /usr/bin/python3, so /usr/bin/python3 -m pip install -r requirements.txt -q
+        # -m:- Tells Python to run a module.
+        # pip:- The module used for installing Python packages.
+        # install:- The pip command to install packages.
+        # -r:- Tells pip to install from a requirements file.
+        # req_file:- The path to the requirements.txt file.
+        # -q:- Quiet mode, reduces output. Without -q it will show detailed installation logs. like- Downloading...  Installing...  Collecting...  Successfully installed...
+        # python3 -m pip:- Run the pip module using the Python interpreter.
+        # python3 -m pip install -r requirements.txt:- Install all dependencies listed in the requirements.txt file.
+        # python3 -m pip install -r requirements.txt -q:- Install dependencies quietly, without verbose output.
         [sys.executable, "-m", "pip", "install", "-r", str(req_file), "-q"],
+        # capture_output=True:- Command ke stdout aur stderr ko Python me capture (save) karta hai.
+        # text=True:- Captured output ko bytes ki jagah normal string (str) me return karta hai.
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -86,24 +114,21 @@ def install_requirements():
 # ─────────────────────────────────────────────
 
 def setup_tunnel() -> dict:
-    print("📋 Step 3: Public URL / Tunnel setup...")
-    print()
-    print("  Claude.ai web se connect karne ke liye ek public HTTPS URL chahiye.")
-    print()
+    print("📋 Step 3: Public URL / Tunnel setup... \n")
+    print("  Claude.ai web se connect karne ke liye ek public HTTPS URL chahiye. \n")
 
-    print("  NOTE: claude.ai web sirf HTTPS public URL accept karta hai.")
-    print("        localhost/local URL claude.ai mein kaam NAHI karega.")
-    print("        Claude Code CLI (terminal) ke liye local bhi chalega.")
-    print()
+    print("  NOTE: claude.ai web only accepts an HTTPS public URL.")
+    print("        A localhost/local URL will NOT work in claude.ai.")
+    print("        For Claude Code CLI (terminal), local will also work. \n")
 
     provider = ask_choice(
-        "Kaunsa tunnel provider use karna chahoge?",
+        "Which tunnel provider would you like to use?",
         [
             ("tailscale",   "Tailscale Funnel  — Free, stable URL, no domain needed (Recommended)"),
-            ("ngrok",       "Ngrok             — Free static domain milta hai (1 per account)"),
-            ("cloudflare",  "Cloudflare Tunnel — Free, stable, apna domain chahiye"),
-            ("manual",      "Manual URL        — Mere paas pehle se URL hai (koi bhi provider)"),
-            ("cli_only",    "Claude Code CLI only — claude.ai web nahi, sirf terminal mein use karunga"),
+            ("ngrok",       "Ngrok             — Free static domain provided (1 per account)"),
+            ("cloudflare",  "Cloudflare Tunnel — Free, stable, needs your own domain"),
+            ("manual",      "Manual URL        — I already have a URL (any provider)"),
+            ("cli_only",    "Claude Code CLI only — no claude.ai web, only using it in the terminal"),
         ],
     )
     print()
@@ -127,12 +152,13 @@ def setup_tunnel() -> dict:
 def _setup_tailscale() -> dict:
     print("  ── Tailscale Funnel Setup ──")
 
+    # shutil.which("tailscale"):- tailscale kaha install hai ye check karta hai and path return karta hai, agar nahi hai to None return karega
     if not shutil.which("tailscale"):
-        print("  tailscale nahi mila. Install karo:")
+        print("  tailscale not found. Please install:")
         print("    curl -fsSL https://tailscale.com/install.sh | sh")
         print("    sudo tailscale up")
         print()
-        input("  Install karke Enter dabao... ")
+        input("  After install press the enter... ")
 
     print()
     print("  Funnel enable karo:")
@@ -142,9 +168,9 @@ def _setup_tailscale() -> dict:
     print("  URL kuch aisa dikhega:")
     print("    https://your-machine-name.tail1234.ts.net/")
     print()
-    input("  Jab URL mil jaye, Enter dabao... ")
+    input("  After URL is available, press enter... ")
 
-    url = ask("  Aapka Tailscale URL (e.g. https://suv.tail8f8b29.ts.net)")
+    url = ask("  Your Tailscale URL (e.g. https://suv.tail8f8b29.ts.net)")
     url = _normalize_url(url)
     print(f"\n  ✅ Saved: {url}\n")
     return {"tunnel_provider": "tailscale", "tunnel_url": url}
@@ -319,6 +345,16 @@ def setup_plugins() -> dict:
 
     for i, (key, label) in enumerate(ALL_PLUGINS, 1):
         marker = "  [always on]" if key == "generic" else ""
+        # {i:2}:- i ko minimum width 2 characters me print karega. kuchh aise
+        #  1.
+        #  2.
+        #  3.
+        # 10.
+        # without {i:2} it will be like this
+        # 1.
+        # 2.
+        # 3.
+        # 10.
         print(f"  {i:2}. {label}{marker}")
 
     print()
@@ -330,12 +366,15 @@ def setup_plugins() -> dict:
         raw = input("  Aapki choice: ").strip().lower()
         if not raw:
             print("  ❌ Kuch to select karo. Enter dabao.")
+            # niche ka code abhi execute nahi hoga, dobara loop start hoga jabtak user valid input nahi deta
             continue
 
         if raw == "all":
             selected = [key for key, _ in ALL_PLUGINS]
             break
 
+        # replace(" ", ",") se har space comma banta hai, isliye "1, 2, 3" -> "1,,2,,3" (do-do comma).
+        # split(",") se beech me khaali "" aati hain, par 'if p.strip()' unhe hata deta hai — output sahi rehta hai.
         parts = [p.strip() for p in raw.replace(" ", ",").split(",") if p.strip()]
         valid = []
         invalid = []
@@ -358,7 +397,10 @@ def setup_plugins() -> dict:
 
     print()
     print("  Selected plugins:")
+    # Python me loop apna alag scope nahi banata. if, for, while blocks ke andar bani variables usi function ke scope ki hoti hain — block ke bahar bhi zinda rehti hain. (Ye C/Java/JS {} block-scope se alag hai; Python me sirf function naya scope banata hai, loop ya if else me nahi.)
     for key in selected:
+        # (l for k, l in ALL_PLUGINS if k == key):- ye ek generator expression hai jo ALL_PLUGINS me se key match hone par label return karega.
+        # next(generator, default):- ye generator se pehla value return karega, agar generator khali hai to default return karega. Yaha default 2nd argument(key) hai.
         label = next((l for k, l in ALL_PLUGINS if k == key), key)
         print(f"    ✅ {label}")
     print()
@@ -371,13 +413,13 @@ def setup_plugins() -> dict:
 # ─────────────────────────────────────────────
 
 def setup_projects() -> dict:
-    print("📋 Step 5: Apne projects register karo...")
+    print("📋 Step 5: Register your project...")
     print()
-    print("  Jab aap AI ko bologe 'ab Vue par kaam karo'")
-    print("  to AI seedha us folder par switch ho jayega.")
+    print("  When your say AI 'Now work on vue'")
+    print("  Then it will switch directly to that folder.")
     print()
-    print("  Har project ke liye ek naam aur path batao.")
-    print("  (Naam short rakho — e.g. 'frappe', 'vue', 'app')")
+    print("  Specify a name and path for each project.")
+    print("  (Name short rakho — e.g. 'frappe', 'vue', 'app')")
     print()
 
     projects = []
@@ -389,6 +431,8 @@ def setup_projects() -> dict:
                 print("  ⚠ Koi project register nahi kiya. Baad mein `register_project` tool se kar sakte ho.\n")
             break
 
+        # .expanduser():- suppose my home directory /home/kk/ and jab mai terminal me cd ~ type + enter karta hu to home directory me chala jata hu. yaani ~ hi /home/kk/ hai. and jab mai .expanduser() use karta hu to ~ ko /home/kk/ me convert kar deta hai.
+        # .resolve(): relative/uljhe hue path ko saaf-suthre absolute path me badalna, taaki registry me reliable path save ho. ex- /home/kk/projects/../vue → /home/kk/vue
         resolved = Path(path).expanduser().resolve()
         if not resolved.exists():
             print(f"  ❌ Path exist nahi karta: {resolved} — dobara try karo.\n")
@@ -410,7 +454,7 @@ def setup_projects() -> dict:
         })
         print(f"  ✅ Registered: '{name}' → {resolved} ({detected_fw})\n")
 
-        if not ask_yes_no("  Aur project add karna hai?", default=True):
+        if not ask_yes_no("  Do you need to add more projects?", default=True):
             break
 
     if projects:
@@ -475,11 +519,15 @@ def setup_email() -> dict:
 # ─────────────────────────────────────────────
 
 def save_config(config: dict):
+    # .mkdir:- make directory. it's create a directory if it is does not already exist.
+    # parents=True:- agar parent directory exist nahi karta to bhi create kar dega. ex. /home/kk/.universal-dev-mcp/config.json ke liye agar .universal-dev-mcp exist nahi karta to bhi create kar dega.
+    # exist_ok=True:- agar directory already exist karta to bhi error nahi dega.
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(config, indent=2))
 
 
 def print_next_steps(config: dict):
+    # config.get:- tunnel_url key ka value return karta hai agar nahi mila to default empty string return karega without raising KeyError.
     tunnel_url = config.get("tunnel_url", "")
     provider = config.get("tunnel_provider", "none")
     plugins = [p for p in config.get("active_plugins", []) if p != "generic"]
@@ -489,7 +537,7 @@ def print_next_steps(config: dict):
     print("=" * 55)
     print()
     print("  Server start karo:")
-    print("    python main.py start --project /aapka/project/path")
+    print("    python3 main.py start --project /your/project/path")
     print()
 
     if provider == "tailscale":

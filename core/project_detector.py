@@ -99,15 +99,17 @@ SIGNATURES = [
 def _check_signal(root: Path, signal: dict) -> int:
     target = root / signal["path"]
     if signal["is_dir"]:
-        if not target.is_dir():
+        if not target.is_dir(): # kya folder exist karta hai?
             return 0
     else:
-        if not target.is_file():
+        if not target.is_file(): # kya file exist karti hai?
             return 0
 
     # Optional content check
     if "contains" in signal and target.is_file():
         try:
+            # Path.read_text():- file ko kholta hai, uska sara text padhta hai aur string return karta hai.
+            # errors="ignore":- Kabhi-kabhi file me aise bytes hote hain jo text me convert (decode) nahi ho paate. ex.-> Hello\x81\x82\x83World to ye errors="ignore" un bytes ko ignore kar deta hai aur baki ka text return karta hai.
             content = target.read_text(errors="ignore")
             if signal["contains"] not in content:
                 return 0

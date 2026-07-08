@@ -87,3 +87,46 @@ def package_list(project_path: str) -> str:
         return f"[{pm} packages]\n\n" + (result.stdout + result.stderr).strip()
     except Exception as e:
         return f"❌ Error: {e}"
+
+
+def package_remove(project_path: str, package: str = "") -> str:
+    """Uninstall a dependency with the detected package manager."""
+    if not package:
+        return "❌ package name required."
+    pm = _detect_pm(project_path)
+    if not pm:
+        return "❌ Could not detect package manager."
+    cmd_map = {
+        "npm": f"npm uninstall {package}",
+        "yarn": f"yarn remove {package}",
+        "pnpm": f"pnpm remove {package}",
+        "pip": f"pip uninstall -y {package}",
+        "composer": f"composer remove {package}",
+        "bundle": f"bundle remove {package}",
+        "cargo": f"cargo remove {package}",
+    }
+    cmd = cmd_map.get(pm, f"{pm} uninstall {package}")
+    try:
+        result = subprocess.run(
+            cmd, shell=True, cwd=project_path,
+            capture_output=True, text=True, timeout=120,
+        )
+        output = (result.stdout + result.stderr).strip()
+        status = "✅" if result.returncode == 0 else "❌"
+        return f"{status} [{pm}] {cmd}\n\n{output}"
+    except Exception as e:
+        return f"❌ Error: {e}"
+
+
+def scripts_list(project_path: str) -> str:
+    """List package.json scripts."""
+    from plugins.shared import list_package_scripts_text
+    return list_package_scripts_text(project_path)
+
+
+def script_run(project_path: str, script: str = "") -> str:
+    """Run a package.json script by name using the detected package manager."""
+    if not script:
+        return "❌ script name required."
+    from plugins.shared import run_package_script
+    return run_package_script(project_path, script)

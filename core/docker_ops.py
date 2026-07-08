@@ -35,3 +35,7 @@ def docker_logs(container_name: str, n: int = 50) -> str:
 
 def docker_exec(container_name: str, command: str) -> str:
     return _docker(f"exec {container_name} {command}")
+
+
+def docker_restart(container_name: str) -> str:
+    return _docker(f"restart {container_name}")

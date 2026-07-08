@@ -1,5 +1,10 @@
 import json
+import time as _time
 from pathlib import Path
+
+_global_config_cache: dict = {}
+_global_config_ts: float = 0.0
+_CONFIG_TTL = 5.0
 
 GLOBAL_CONFIG_DIR = Path.home() / ".universal-dev-mcp"
 GLOBAL_CONFIG_FILE = GLOBAL_CONFIG_DIR / "config.json"
@@ -19,16 +24,33 @@ COMMON_PROJECT_KEYS = {
     "detected_by",
 }
 
+print("_time.time()", _time.time(), "now - _global_config_ts < _CONFIG_TTL", _time.time() - _global_config_ts < _CONFIG_TTL)
+
 
 def load_global_config() -> dict:
+    """Global config (~/.universal-dev-mcp/config.json) ko cache ke saath load karta hai.
+
+    _CONFIG_TTL seconds tak cache fresh maani jaati hai — us dauraan disk read skip hota hai.
+    File na mile to {} return hoti hai. Hamesha ek copy return hoti hai (cache safe rahe).
+    """
+    global _global_config_cache, _global_config_ts
+    now = _time.time()
+    if _global_config_cache and now - _global_config_ts < _CONFIG_TTL:
+        return dict(_global_config_cache)
     if GLOBAL_CONFIG_FILE.exists():
-        return json.loads(GLOBAL_CONFIG_FILE.read_text())
-    return {}
+        _global_config_cache = json.loads(GLOBAL_CONFIG_FILE.read_text())
+    else:
+        _global_config_cache = {}
+    _global_config_ts = now
+    return dict(_global_config_cache)
 
 
 def save_global_config(config: dict):
+    global _global_config_cache, _global_config_ts
     GLOBAL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     GLOBAL_CONFIG_FILE.write_text(json.dumps(config, indent=2))
+    _global_config_cache = dict(config)
+    _global_config_ts = _time.time()
 
 
 def load_state() -> dict:

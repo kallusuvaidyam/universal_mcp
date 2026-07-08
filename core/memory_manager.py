@@ -85,6 +85,10 @@ def _get_conn():
     """
     )
 
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_pk ON memory(project, key)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_project_memory_pk ON project_memory(project, user_id, key)")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.commit()
     return conn
 

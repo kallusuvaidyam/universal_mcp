@@ -1,4 +1,4 @@
-import random
+import secrets
 import time
 import json
 import smtplib
@@ -15,7 +15,7 @@ OTP_EXPIRY_SECONDS = 300       # 5 minutes
 
 
 def generate_otp() -> str:
-    return str(random.randint(100000, 999999))
+    return str(secrets.randbelow(900000) + 100000)
 
 
 def send_otp(otp: str) -> str:
@@ -57,7 +57,7 @@ def request_otp() -> str:
     cfg = load_global_config()
     email = cfg.get("email", {}).get("from_email", "developer")
     otp = generate_otp()
-    _pending_otps[email] = {"otp": otp, "created_at": time.time()}
+    _pending_otps[email] = {"otp": otp, "created_at": time.time(), "attempts": 0}
     return send_otp(otp)
 
 
@@ -76,11 +76,16 @@ def verify_otp(code: str, developer_name: str = "") -> dict:
         msg = request_otp()
         return {"success": False, "message": f"OTP expire ho gayi. Nayi OTP: {msg}"}
 
+    pending["attempts"] += 1
+    if pending["attempts"] > 5:
+        del _pending_otps[email]
+        request_otp()
+        return {"success": False, "message": "Too many wrong attempts. Nayi OTP bheji gayi."}
+
     if pending["otp"] != str(code).strip():
         return {"success": False, "message": "Galat OTP. Dobara try karo."}
 
     # Valid — create session
-    import secrets
     token = secrets.token_hex(16)
     dev = developer_name.strip() or email.split("@")[0]
     _sessions[token] = {"email": email, "developer_name": dev, "created_at": time.time()}
@@ -109,5 +114,24 @@ def auth_required(token: str) -> str | None:
     if not cfg.get("require_auth", True):
         return None  # auth disabled
     if not is_valid_session(token):
-        return "❌ Session invalid. Pehle verify_session tool use karo."
+        return (
+            "❌ Session invalid. User ke paas session_token NAHI hota — use mat maango. "
+            "Aap (AI) khud ye karo: STEP 1: verify_session tool ko bina arguments ke call karo "
+            "(isse OTP developer ko bhej diya jayega). STEP 2: user se 6-digit code poochho. "
+            "STEP 3: verify_session(code='XXXXXX') call karo — session_token milega, "
+            "use har tool call mein session_token param mein pass karo."
+        )
     return None
+
+
+def get_session_context(token: str) -> dict:
+    """Return a copy of session data for a given token. Empty dict if not found."""
+    return dict(_sessions.get(token, {}))
+
+
+def update_session_context(token: str, updates: dict) -> bool:
+    """Update per-session context (active_project_path, active_framework, etc.)."""
+    if token not in _sessions:
+        return False
+    _sessions[token].update(updates)
+    return True

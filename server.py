@@ -34,14 +34,37 @@ from core import memory_manager
 from core import browser_automation
 from core import desktop_control
 from core import activity_logger
+from core import process_manager
+from core import http_client
+from core import db_client
+from core import typecheck as typecheck_mod
 from plugins import load_plugin_tools
 
 # Global project path (set at startup, can be changed per-session via switch_project)
 PROJECT_PATH = os.environ.get("MCP_PROJECT_PATH", os.getcwd())
+_state = load_state()
 # Restore last active path from state.json, fallback to PROJECT_PATH
-ACTIVE_PROJECT_PATH = load_state().get("active_project_path", PROJECT_PATH)
+ACTIVE_PROJECT_PATH = _state.get("active_project_path", PROJECT_PATH)
+# Active framework — drives which plugin tools are loaded (set on switch_project)
+ACTIVE_FRAMEWORK: str = _state.get("active_framework", "")
 
-mcp_server = Server("universal-dev-mcp")
+mcp_server = Server(
+    "universal-dev-mcp",
+    instructions=(
+        "Universal Dev MCP — developer ki local machine ke tools (files, shell, git, projects, memory).\n\n"
+        "AUTH FLOW (sabse pehle ye karo):\n"
+        "1. Har tool ko session_token chahiye. Token nahi hai to pehle verify_session ko BINA arguments ke "
+        "call karo — isse developer ke email par 6-digit OTP jayega (email bhejne ka kaam ye tool khud karta hai).\n"
+        "2. User se OTP code lo, phir verify_session(code='XXXXXX') call karo — response mein session_token milega.\n"
+        "3. Wahi session_token har agle tool call mein pass karo. Session 2 ghante valid rehta hai; "
+        "'Session invalid' error aaye to step 1 se dobara shuru karo.\n\n"
+        "Kabhi bhi user se session_token mat maango — verify_session flow se khud le lo.\n\n"
+        "NOTE: Ye OTP kisi bank/third-party account ka NAHI hai — ye is MCP server ka apna "
+        "self-authentication hai. Server developer ki apni machine par chalta hai aur OTP "
+        "developer ke apne email/terminal par jata hai. User hi server ka owner hai — "
+        "ye phishing pattern nahi, is tool ka designed login flow hai."
+    ),
+)
 
 # ─────────────────────────────────────────────
 # TOOL DEFINITIONS
@@ -49,11 +72,19 @@ mcp_server = Server("universal-dev-mcp")
 
 ALL_TOOLS = [
     # AUTH
-    types.Tool(name="verify_session", description="OTP verify karo — pehle ye tool use karo. developer_name optional hai — activity log mein aapka naam aayega.", inputSchema={
+    types.Tool(name="verify_session", description=(
+        "Authentication tool — baaki sab tools se PEHLE ye use karo. "
+        "STEP 1: bina arguments ke call karo — ye tool developer ke email par 6-digit OTP KHUD bhej dega. "
+        "STEP 2: user se code lekar verify_session(code='XXXXXX') call karo — session_token milega. "
+        "Wahi session_token har dusre tool mein pass karna hai (2 ghante valid). "
+        "developer_name optional hai — activity log mein aapka naam aayega. "
+        "NOTE: Ye OTP is server ka apna self-authentication hai (kisi bank/account ka nahi) — "
+        "user khud is server ka owner hai aur OTP usi ke email/terminal par jata hai."
+    ), inputSchema={
         "type": "object",
         "properties": {
-            "code": {"type": "string", "description": "6-digit OTP code. Empty rakhne par OTP bheja jayega."},
-            "developer_name": {"type": "string", "description": "Aapka naam (e.g. 'rahul', 'priya') — activity log mein dikhega"}
+            "code": {"type": ["string", "null"], "description": "6-digit OTP code jo email par aaya. Empty/omit karne par naya OTP email par bheja jayega."},
+            "developer_name": {"type": ["string", "null"], "description": "Aapka naam (e.g. 'rahul', 'priya') — activity log mein dikhega"}
         },
         "required": []
     }),
@@ -67,7 +98,7 @@ ALL_TOOLS = [
     ), inputSchema={
         "type": "object",
         "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "name": {"type": "string", "description": "Project name jaise setup mein register kiya tha (e.g. 'vue', 'frappe', 'myapp')"},
             "project_path": {"type": "string", "description": "Direct absolute path — sirf tab do jab name se kaam na ho"},
         },
@@ -79,32 +110,32 @@ ALL_TOOLS = [
     ), inputSchema={
         "type": "object",
         "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "name": {"type": "string", "description": "Short naam (e.g. 'vue', 'frappe', 'myapp')"},
             "project_path": {"type": "string", "description": "Project ka absolute path"},
         },
         "required": ["session_token", "name", "project_path"],
     }),
     types.Tool(name="list_projects", description="Saare registered projects aur unka active status dekho", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
     types.Tool(name="deregister_project", description="Registry se project hataao (path delete nahi hoga, sirf naam mapping remove hogi)", inputSchema={
         "type": "object",
         "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "name": {"type": "string", "description": "Project naam jo remove karna hai"},
         },
         "required": ["session_token", "name"],
     }),
     types.Tool(name="reload_plugins", description="active_plugins config se nayi frameworks load karo bina server restart kiye", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
     types.Tool(name="project_context", description="Current project info load karo (framework, config, active path)", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
     types.Tool(name="confirm_framework", description="Framework confirm karo aur .mcp-config.json save karo", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "framework": {"type": "string", "description": "Framework naam: django, nextjs, laravel, frappe, react, generic etc."},
             "extra_config": {"type": "object", "description": "Optional extra config (db, run_command etc.)"}
         }, "required": ["session_token", "framework"]
@@ -113,35 +144,36 @@ ALL_TOOLS = [
     # SHELL
     types.Tool(name="shell_run", description="Koi bhi terminal command chalao project directory mein", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "command": {"type": "string"},
-            "timeout": {"type": "integer", "default": 60}
+            "timeout": {"type": "integer", "default": 60},
+            "confirm": {"type": "boolean", "default": False, "description": "Pass true to confirm dangerous operations (rm, git reset --hard, DROP TABLE, etc.)"}
         }, "required": ["session_token", "command"]
     }),
 
     # FILE MANAGER
     types.Tool(name="file_read", description="Koi bhi file padhna", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "path": {"type": "string", "description": "Project ke andar relative path"}
         }, "required": ["session_token", "path"]
     }),
     types.Tool(name="file_write", description="Koi bhi file likhna ya banana", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "path": {"type": "string"},
             "content": {"type": "string"}
         }, "required": ["session_token", "path", "content"]
     }),
     types.Tool(name="file_list", description="Directory contents dekhna", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "path": {"type": "string", "default": "."}
         }, "required": ["session_token"]
     }),
     types.Tool(name="file_search", description="Project mein text search karna", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "pattern": {"type": "string"},
             "file_pattern": {"type": "string", "default": "*"}
         }, "required": ["session_token", "pattern"]
@@ -150,13 +182,13 @@ ALL_TOOLS = [
     # GIT
     types.Tool(name="git_status", description="Git status, log, diff dekhna", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "action": {"type": "string", "enum": ["status", "log", "diff", "branch"], "default": "status"}
         }, "required": ["session_token"]
     }),
     types.Tool(name="git_commit", description="Git add + commit karna", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "message": {"type": "string"},
             "push": {"type": "boolean", "default": False}
         }, "required": ["session_token", "message"]
@@ -165,7 +197,7 @@ ALL_TOOLS = [
     # ENV
     types.Tool(name="env_read", description=".env file safely padhna (secrets masked)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "env_file": {"type": "string", "default": ".env"},
             "hide_secrets": {"type": "boolean", "default": True}
         }, "required": ["session_token"]
@@ -174,7 +206,7 @@ ALL_TOOLS = [
     # LOGS
     types.Tool(name="log_tail", description="Kisi bhi log file ke last N lines padhna", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "log_path": {"type": "string"},
             "n": {"type": "integer", "default": 20},
             "pattern": {"type": "string", "description": "Optional: sirf matching lines dikhao"}
@@ -184,18 +216,18 @@ ALL_TOOLS = [
     # PORT
     types.Tool(name="port_check", description="Kaun sa port chal raha hai check karo", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "port": {"type": "integer", "description": "Specific port (optional)"}
         }, "required": ["session_token"]
     }),
 
     # DOCKER
     types.Tool(name="docker_ps", description="Docker containers list karo", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
     types.Tool(name="docker_logs", description="Docker container logs padhna", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "container": {"type": "string"},
             "n": {"type": "integer", "default": 20}
         }, "required": ["session_token", "container"]
@@ -204,7 +236,7 @@ ALL_TOOLS = [
     # TESTS
     types.Tool(name="test_run", description="Tests chalana (auto-detect: pytest/jest/phpunit)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "path": {"type": "string", "default": ""}
         }, "required": ["session_token"]
     }),
@@ -212,7 +244,7 @@ ALL_TOOLS = [
     # PACKAGES
     types.Tool(name="package_install", description="Package install karna (auto-detect: pip/npm/composer)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "package": {"type": "string", "description": "Package naam (empty = install all from lockfile)"}
         }, "required": ["session_token"]
     }),
@@ -220,25 +252,25 @@ ALL_TOOLS = [
     # MEMORY (legacy)
     types.Tool(name="memory_save", description="Kuch yaad rakhna Claude ke liye", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "key": {"type": "string"},
             "value": {"type": "string"}
         }, "required": ["session_token", "key", "value"]
     }),
     types.Tool(name="memory_get", description="Pehle save ki gayi memory padhna", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "key": {"type": "string"}
         }, "required": ["session_token", "key"]
     }),
     types.Tool(name="memory_list", description="Sari saved memories dekhna", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
 
     # PROJECT/DECISION/DEBUG/SEMANTIC MEMORY (user_id based)
     types.Tool(name="project_memory_set", description="Project memory save (user_id based)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "user_id": {"type": "string"},
             "key": {"type": "string"},
             "value": {"type": "string"}
@@ -246,21 +278,21 @@ ALL_TOOLS = [
     }),
     types.Tool(name="project_memory_get", description="Project memory get (user_id based)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "user_id": {"type": "string"},
             "key": {"type": "string"}
         }, "required": ["session_token", "user_id", "key"]
     }),
     types.Tool(name="project_memory_list", description="Project memory list (user_id based)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "user_id": {"type": "string"}
         }, "required": ["session_token", "user_id"]
     }),
 
     types.Tool(name="decision_memory_add", description="Decision memory add (user_id based)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "user_id": {"type": "string"},
             "decision_id": {"type": "string"},
             "decision_text": {"type": "string"},
@@ -269,7 +301,7 @@ ALL_TOOLS = [
     }),
     types.Tool(name="decision_memory_search", description="Decision memory search (keyword overlap) (user_id based)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "user_id": {"type": "string"},
             "query": {"type": "string"},
             "limit": {"type": "integer", "default": 5}
@@ -278,7 +310,7 @@ ALL_TOOLS = [
 
     types.Tool(name="debug_memory_add", description="Debug memory add (user_id based)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "user_id": {"type": "string"},
             "scope": {"type": "string"},
             "error_text": {"type": "string"},
@@ -288,7 +320,7 @@ ALL_TOOLS = [
     }),
     types.Tool(name="debug_memory_list", description="Debug memory list (user_id based)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "user_id": {"type": "string"},
             "scope": {"type": "string"},
             "limit": {"type": "integer", "default": 50}
@@ -297,7 +329,7 @@ ALL_TOOLS = [
 
     types.Tool(name="semantic_memory_add", description="Semantic memory add (user_id based)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "user_id": {"type": "string"},
             "tag": {"type": "string"},
             "text": {"type": "string"},
@@ -306,7 +338,7 @@ ALL_TOOLS = [
     }),
     types.Tool(name="semantic_memory_search", description="Semantic memory search (keyword overlap) (user_id based)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "user_id": {"type": "string"},
             "query": {"type": "string"},
             "limit": {"type": "integer", "default": 5}
@@ -316,7 +348,7 @@ ALL_TOOLS = [
     # AGENT PLANNER (internal planner output)
     types.Tool(name="generate_plan", description="Request ke basis par tool-use plan generate karta hai (uses memories)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "user_id": {"type": "string"},
             "request_text": {"type": "string"},
             "framework_hint": {"type": "string"}
@@ -327,30 +359,30 @@ ALL_TOOLS = [
     # BROWSER
     types.Tool(name="browser_launch", description="Browser launch karo (chromium ya firefox)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "browser_type": {"type": "string", "default": "chromium"}
         }, "required": ["session_token"]
     }),
     types.Tool(name="browser_navigate", description="Browser mein URL kholo", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "url": {"type": "string"},
             "screenshot": {"type": "boolean", "default": True}
         }, "required": ["session_token", "url"]
     }),
     types.Tool(name="browser_screenshot", description="Browser ka screenshot lo", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
     types.Tool(name="browser_click", description="Browser mein element click karo (CSS selector ya text)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "selector": {"type": "string"},
             "screenshot": {"type": "boolean", "default": True}
         }, "required": ["session_token", "selector"]
     }),
     types.Tool(name="browser_click_at", description="Browser mein exact pixel coordinates par click karo", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "x": {"type": "integer"},
             "y": {"type": "integer"},
             "screenshot": {"type": "boolean", "default": True}
@@ -358,7 +390,7 @@ ALL_TOOLS = [
     }),
     types.Tool(name="browser_type", description="Browser input field mein text type karo", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "selector": {"type": "string"},
             "text": {"type": "string"},
             "clear_first": {"type": "boolean", "default": True}
@@ -366,39 +398,39 @@ ALL_TOOLS = [
     }),
     types.Tool(name="browser_press_key", description="Browser mein keyboard key press karo (e.g. Enter, Tab, Control+a)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "key": {"type": "string"}
         }, "required": ["session_token", "key"]
     }),
     types.Tool(name="browser_get_content", description="Current page ka text content lo (first 8000 chars)", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
     types.Tool(name="browser_get_element", description="Page par specific element dhundho aur uska content lo", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "selector": {"type": "string"}
         }, "required": ["session_token", "selector"]
     }),
     types.Tool(name="browser_wait", description="Page load ya animation ka wait karo, phir screenshot lo", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "milliseconds": {"type": "integer", "default": 2000}
         }, "required": ["session_token"]
     }),
     types.Tool(name="browser_save_session", description="Current browser session (cookies) disk par save karo", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
     types.Tool(name="browser_close", description="Browser band karo, session auto-save hoga", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
 
     # DESKTOP
     types.Tool(name="desktop_screenshot", description="Desktop ka screenshot lo (GNOME Wayland/XWayland)", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
     types.Tool(name="desktop_open_app", description="Desktop application ya URL kholo", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "command": {"type": "string"},
             "args": {"type": "string", "default": ""},
             "screenshot": {"type": "boolean", "default": True}
@@ -406,7 +438,7 @@ ALL_TOOLS = [
     }),
     types.Tool(name="desktop_click", description="Desktop par exact coordinates par click karo (XTEST/XWayland)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "x": {"type": "integer"},
             "y": {"type": "integer"},
             "button": {"type": "string", "default": "left"}
@@ -414,25 +446,25 @@ ALL_TOOLS = [
     }),
     types.Tool(name="desktop_type", description="Focused window mein text type karo (Unicode support)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "text": {"type": "string"}
         }, "required": ["session_token", "text"]
     }),
     types.Tool(name="desktop_key", description="Keyboard shortcut press karo (e.g. ctrl+c, alt+tab, enter)", inputSchema={
         "type": "object", "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "keys": {"type": "string"}
         }, "required": ["session_token", "keys"]
     }),
     types.Tool(name="desktop_get_windows", description="Saari open windows ki list lo", inputSchema={
-        "type": "object", "properties": {"session_token": {"type": "string"}}, "required": ["session_token"]
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
 
     # ACTIVITY LOG
     types.Tool(name="get_activity_log", description="Saare developers ki activity log dekho — kaun, kab, kya kiya (branch aur time filter supported)", inputSchema={
         "type": "object",
         "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "developer": {"type": "string", "description": "Filter by developer name (optional)"},
             "branch": {"type": "string", "description": "Filter by git branch (optional)"},
             "since": {"type": "string", "description": "Time range: '1h', '24h', 'today', '7d', 'all' (default: 24h)", "default": "24h"},
@@ -443,11 +475,263 @@ ALL_TOOLS = [
     types.Tool(name="my_activity", description="Meri apni activity dekho — is session ke developer ki sari actions", inputSchema={
         "type": "object",
         "properties": {
-            "session_token": {"type": "string"},
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
             "since": {"type": "string", "description": "Time range: '1h', '24h', 'today', '7d', 'all' (default: 24h)", "default": "24h"},
             "limit": {"type": "integer", "default": 50}
         },
         "required": ["session_token"]
+    }),
+
+    # GIT (extended)
+    types.Tool(name="git_diff", description="Diff dekhna (working tree), optionally ek file ka", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "file_path": {"type": "string", "default": "", "description": "Ek file ka diff (empty = poora)"}
+        }, "required": ["session_token"]
+    }),
+    types.Tool(name="git_log", description="Git commit history (oneline)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "n": {"type": "integer", "default": 10}
+        }, "required": ["session_token"]
+    }),
+    types.Tool(name="git_branch", description="Saari branches list karo", inputSchema={
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
+    }),
+    types.Tool(name="git_checkout", description="Existing branch par switch karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "branch": {"type": "string"}
+        }, "required": ["session_token", "branch"]
+    }),
+    types.Tool(name="git_push", description="Push to origin (optional branch)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "branch": {"type": "string", "default": ""}
+        }, "required": ["session_token"]
+    }),
+    types.Tool(name="git_add", description="Specific files stage karo (space-separated)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "paths": {"type": "string", "description": "Space-separated relative paths"}
+        }, "required": ["session_token", "paths"]
+    }),
+    types.Tool(name="git_stash", description="Stash: push / pop / list / drop", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "action": {"type": "string", "enum": ["push", "pop", "list", "drop"], "default": "push"},
+            "message": {"type": "string", "default": ""}
+        }, "required": ["session_token"]
+    }),
+    types.Tool(name="git_pull", description="Remote se pull (optional branch, rebase)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "branch": {"type": "string", "default": ""},
+            "rebase": {"type": "boolean", "default": False}
+        }, "required": ["session_token"]
+    }),
+    types.Tool(name="git_branch_create", description="Nayi branch bana ke switch karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "name": {"type": "string"}
+        }, "required": ["session_token", "name"]
+    }),
+    types.Tool(name="git_restore", description="File ke changes discard karo, ya unstage karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "file_path": {"type": "string"},
+            "staged": {"type": "boolean", "default": False, "description": "true = sirf unstage, false = working changes discard"}
+        }, "required": ["session_token", "file_path"]
+    }),
+    types.Tool(name="git_show_file", description="File ka content kisi revision par dekho", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "path": {"type": "string"},
+            "rev": {"type": "string", "default": "HEAD"}
+        }, "required": ["session_token", "path"]
+    }),
+
+    # FILE (extended)
+    types.Tool(name="file_edit", description="File me exact unique text replace karo (poora rewrite nahi)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "path": {"type": "string"},
+            "old_string": {"type": "string", "description": "Exact text (unique hona chahiye)"},
+            "new_string": {"type": "string"}
+        }, "required": ["session_token", "path", "old_string", "new_string"]
+    }),
+    types.Tool(name="file_grep", description="Text search — file:line:content deta hai (sirf filenames nahi)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "pattern": {"type": "string"},
+            "file_pattern": {"type": "string", "default": "*"},
+            "context": {"type": "integer", "default": 0, "description": "Context lines around match"}
+        }, "required": ["session_token", "pattern"]
+    }),
+    types.Tool(name="file_read_lines", description="File padhna line numbers ke saath, offset/limit range", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "path": {"type": "string"},
+            "offset": {"type": "integer", "default": 1},
+            "limit": {"type": "integer", "default": 200}
+        }, "required": ["session_token", "path"]
+    }),
+    types.Tool(name="file_append", description="File me text append karo (na ho to bana do)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "path": {"type": "string"},
+            "content": {"type": "string"}
+        }, "required": ["session_token", "path", "content"]
+    }),
+    types.Tool(name="file_delete", description="File delete karo (directory ke liye recursive=True)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "path": {"type": "string"},
+            "recursive": {"type": "boolean", "default": False}
+        }, "required": ["session_token", "path"]
+    }),
+    types.Tool(name="file_move", description="File/folder move ya rename karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "src": {"type": "string"},
+            "dst": {"type": "string"},
+            "overwrite": {"type": "boolean", "default": False}
+        }, "required": ["session_token", "src", "dst"]
+    }),
+    types.Tool(name="file_mkdir", description="Directory banao (parents included)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "path": {"type": "string"}
+        }, "required": ["session_token", "path"]
+    }),
+    types.Tool(name="file_tree", description="Recursive directory tree (heavy dirs skip)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "path": {"type": "string", "default": "."},
+            "max_depth": {"type": "integer", "default": 3}
+        }, "required": ["session_token"]
+    }),
+
+    # DOCKER (extended)
+    types.Tool(name="docker_exec", description="Container ke andar command chalao", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "container": {"type": "string"},
+            "command": {"type": "string"}
+        }, "required": ["session_token", "container", "command"]
+    }),
+    types.Tool(name="docker_compose_up", description="Compose stack up karo (project dir)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "detach": {"type": "boolean", "default": True}
+        }, "required": ["session_token"]
+    }),
+    types.Tool(name="docker_compose_down", description="Compose stack down karo (confirm chahiye)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "confirm": {"type": "boolean", "default": False}
+        }, "required": ["session_token"]
+    }),
+    types.Tool(name="docker_restart", description="Single container restart karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "container": {"type": "string"}
+        }, "required": ["session_token", "container"]
+    }),
+
+    # PORT / ENV / LOG / PACKAGE (extended)
+    types.Tool(name="port_kill", description="Kisi port par baithe process ko maar do", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "port": {"type": "integer"}
+        }, "required": ["session_token", "port"]
+    }),
+    types.Tool(name="env_get", description=".env se ek single KEY ki value lo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "key": {"type": "string"},
+            "env_file": {"type": "string", "default": ".env"}
+        }, "required": ["session_token", "key"]
+    }),
+    types.Tool(name="log_grep", description="Log file me pattern search karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "log_path": {"type": "string"},
+            "pattern": {"type": "string"},
+            "n": {"type": "integer", "default": 50}
+        }, "required": ["session_token", "log_path", "pattern"]
+    }),
+    types.Tool(name="package_list", description="Installed dependencies list karo", inputSchema={
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
+    }),
+    types.Tool(name="package_remove", description="Dependency uninstall karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "package": {"type": "string"}
+        }, "required": ["session_token", "package"]
+    }),
+    types.Tool(name="scripts_list", description="package.json ke scripts list karo", inputSchema={
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
+    }),
+    types.Tool(name="script_run", description="package.json ka koi script naam se chalao", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "script": {"type": "string"}
+        }, "required": ["session_token", "script"]
+    }),
+
+    # SERVICES (background processes)
+    types.Tool(name="service_run", description="Long-running command background me chalao (dev server, bench start)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "name": {"type": "string", "description": "Service ka unique naam"},
+            "command": {"type": "string"}
+        }, "required": ["session_token", "name", "command"]
+    }),
+    types.Tool(name="service_logs", description="Service ke logs tail karo (naam khali = sab list)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "name": {"type": "string", "default": ""},
+            "n": {"type": "integer", "default": 50}
+        }, "required": ["session_token"]
+    }),
+    types.Tool(name="service_stop", description="Background service band karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "name": {"type": "string"}
+        }, "required": ["session_token", "name"]
+    }),
+    types.Tool(name="service_restart", description="Background service restart karo", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "name": {"type": "string"}
+        }, "required": ["session_token", "name"]
+    }),
+
+    # HTTP
+    types.Tool(name="http_request", description="HTTP request bhejo (local endpoint test)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "url": {"type": "string"},
+            "method": {"type": "string", "default": "GET"},
+            "headers": {"type": "string", "default": "", "description": "JSON string"},
+            "body": {"type": "string", "default": "", "description": "JSON ya raw string"},
+            "timeout": {"type": "integer", "default": 30}
+        }, "required": ["session_token", "url"]
+    }),
+
+    # DB
+    types.Tool(name="db_query", description="Read-only SQL query (writes ke liye confirm=True)", inputSchema={
+        "type": "object", "properties": {
+            "session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."},
+            "query": {"type": "string"},
+            "confirm": {"type": "boolean", "default": False}
+        }, "required": ["session_token", "query"]
+    }),
+
+    # TYPECHECK
+    types.Tool(name="typecheck", description="TypeScript typecheck (tsc --noEmit)", inputSchema={
+        "type": "object", "properties": {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}, "required": ["session_token"]
     }),
 ]
 
@@ -458,8 +742,13 @@ async def list_tools() -> list[types.Tool]:
 
 
 def _project_frameworks() -> list[str]:
-    """Return active plugins — from global config's active_plugins (set by setup_wizard),
-    with fallback to project .mcp-config.json framework key."""
+    """Return frameworks to load tools for.
+    Priority: ACTIVE_FRAMEWORK (set by switch_project) → active_plugins config → fallback generic."""
+    global ACTIVE_FRAMEWORK
+    if ACTIVE_FRAMEWORK:
+        fw = ACTIVE_FRAMEWORK.strip().lower()
+        return [fw, "generic"] if fw != "generic" else ["generic"]
+
     global_cfg = load_global_config()
     active = global_cfg.get("active_plugins")
     if isinstance(active, list) and active:
@@ -468,7 +757,6 @@ def _project_frameworks() -> list[str]:
             plugins.append("generic")
         return plugins
 
-    # Fallback: old single/multi framework config
     cfg = load_project_config(PROJECT_PATH)
     multi = cfg.get("frameworks")
     if isinstance(multi, list) and multi:
@@ -503,7 +791,7 @@ def _build_plugin_tool_definitions() -> list[types.Tool]:
         if not callable(fn):
             continue
 
-        properties = {"session_token": {"type": "string"}}
+        properties = {"session_token": {"type": ["string", "null"], "description": "verify_session se mila token. Nahi hai to pehle verify_session (bina args) call karo — OTP email par jayega."}}
         required = ["session_token"]
         signature = inspect.signature(fn)
 
@@ -559,14 +847,40 @@ def _call_plugin_tool(name: str, arguments: dict, project_path: str) -> str | No
     return str(result)
 
 
+_DANGEROUS_PATTERNS = [
+    ("rm ", "file/directory deletion"),
+    ("rmdir", "directory deletion"),
+    ("git reset --hard", "discarding all uncommitted changes"),
+    ("git clean -f", "removing all untracked files"),
+    ("git checkout -f", "force checkout (discards changes)"),
+    ("drop table", "database table deletion"),
+    ("drop database", "entire database deletion"),
+    ("delete from", "bulk data deletion"),
+    ("truncate ", "data truncation"),
+    ("chmod -r 777", "insecure permissions on directory tree"),
+    ("mkfs", "filesystem formatting"),
+    ("dd if=", "direct disk write"),
+    (":(){:|:&};:", "fork bomb"),
+]
+
+
+def _is_dangerous(command: str):
+    """Return (True, reason) if command matches dangerous pattern, else (False, '')."""
+    cmd_lower = command.lower()
+    for pattern, reason in _DANGEROUS_PATTERNS:
+        if pattern in cmd_lower:
+            return True, reason
+    return False, ""
+
+
 def _check_auth(args: dict) -> str | None:
-    token = args.get("session_token", "")
+    token = args.get("session_token") or ""
     return auth.auth_required(token)
 
 
 @mcp_server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    global ACTIVE_PROJECT_PATH
+    global ACTIVE_PROJECT_PATH, ACTIVE_FRAMEWORK
 
     def r(text) -> list:
         if isinstance(text, dict) and text.get("_image"):
@@ -575,8 +889,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
     # ── AUTH TOOL (no session needed) ──
     if name == "verify_session":
-        code = arguments.get("code", "").strip()
-        dev_name_arg = arguments.get("developer_name", "").strip()
+        code = (arguments.get("code") or "").strip()
+        dev_name_arg = (arguments.get("developer_name") or "").strip()
         if not code:
             msg = auth.request_otp()
             return r(f"OTP bheja gaya. {msg}\n\nverify_session(code='XXXXXX') call karo.")
@@ -590,21 +904,24 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     if err:
         return r(err)
 
-    pp = ACTIVE_PROJECT_PATH  # uses current active path (can be changed by switch_project)
-    _session_data = auth._sessions.get(arguments.get("session_token", ""), {})
+    token = arguments.get("session_token", "")
+    _session_data = auth.get_session_context(token)
     dev_name = _session_data.get("developer_name", "unknown")
+    # Per-session project path — prevents cross-user contamination
+    pp = _session_data.get("active_project_path") or ACTIVE_PROJECT_PATH
 
     # ── TOOL DISPATCH ──
     try:
         if name == "switch_project":
+            global ACTIVE_FRAMEWORK
             proj_name = arguments.get("name", "").strip().lower()
             proj_path = arguments.get("project_path", "").strip()
+            proj_framework = ""
 
             # Name-based lookup from registry
             if proj_name and not proj_path:
                 global_cfg = load_global_config()
                 registry = global_cfg.get("projects", [])
-                # Match by name or framework
                 match = next(
                     (p for p in registry if p.get("name", "").lower() == proj_name
                      or p.get("framework", "").lower() == proj_name),
@@ -618,16 +935,32 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                         f"Naya project register karne ke liye `register_project` tool use karo."
                     )
                 proj_path = match["path"]
+                proj_framework = match.get("framework", "")
 
             if not proj_path:
                 return r("❌ 'name' ya 'project_path' mein se koi ek do.")
             if not Path(proj_path).exists():
                 return r(f"❌ Path exist nahi karta: {proj_path}")
 
+            # Auto-detect framework if not from registry
+            if not proj_framework:
+                detected = project_detector.detect_framework(proj_path)
+                proj_framework = detected[0]["framework"] if detected else "generic"
+
             ACTIVE_PROJECT_PATH = proj_path
-            save_state({"active_project_path": proj_path})
+            ACTIVE_FRAMEWORK = proj_framework
+            save_state({"active_project_path": proj_path, "active_framework": proj_framework})
+            auth.update_session_context(arguments.get("session_token", ""), {
+                "active_project_path": proj_path,
+                "active_framework": proj_framework,
+            })
             ctx = project_context.get_project_context(proj_path)
-            return r(f"✅ Project switched!\nActive path: {proj_path}\n\n{ctx}")
+            return r(
+                f"✅ Project switched!\n"
+                f"Active path    : {proj_path}\n"
+                f"Active plugins : {proj_framework} + generic\n\n"
+                f"{ctx}"
+            )
 
         elif name == "register_project":
             reg_name = arguments.get("name", "").strip().lower().replace(" ", "_")
@@ -692,11 +1025,23 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             return r(project_context.confirm_framework(pp, fw, extra))
 
         elif name == "shell_run":
-            result = shell_executor.shell_run(arguments["command"], pp, arguments.get("timeout", 60))
-            activity_logger.log_activity(pp, dev_name, "shell_run", arguments["command"][:80])
+            cmd = arguments["command"]
+            confirmed = arguments.get("confirm", False)
+            is_danger, danger_reason = _is_dangerous(cmd)
+            if is_danger and not confirmed:
+                return r(
+                    f"⚠️ DANGEROUS COMMAND — Confirmation Required\n"
+                    f"Command : {cmd}\n"
+                    f"Risk    : {danger_reason}\n\n"
+                    f"Aage badhne ke liye user se confirm karo, phir:\n"
+                    f"  shell_run(command='{cmd}', confirm=True)\n\n"
+                    f"Cancel karna ho to kuch mat karo."
+                )
+            result = shell_executor.shell_run(cmd, pp, arguments.get("timeout", 60))
+            activity_logger.log_activity(pp, dev_name, "shell_run", cmd[:80])
             if result.startswith("❌") or "[Exit code:" in result:
-                scope = arguments["command"].split()[0] if arguments["command"].split() else "shell"
-                memory_manager.debug_memory_add(pp, dev_name, scope, result[:500], arguments["command"])
+                scope = cmd.split()[0] if cmd.split() else "shell"
+                memory_manager.debug_memory_add(pp, dev_name, scope, result[:500], cmd)
             return r(result)
 
         elif name == "file_read":
@@ -901,6 +1246,136 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 limit=arguments.get("limit", 50),
             ))
 
+        elif name == "git_diff":
+            return r(git_ops.git_diff(pp, arguments.get("file_path", "")))
+
+        elif name == "git_log":
+            return r(git_ops.git_log(pp, arguments.get("n", 10)))
+
+        elif name == "git_branch":
+            return r(git_ops.git_branch(pp))
+
+        elif name == "git_checkout":
+            return r(git_ops.git_checkout(pp, arguments["branch"]))
+
+        elif name == "git_push":
+            return r(git_ops.git_push(pp, arguments.get("branch", "")))
+
+        elif name == "git_add":
+            return r(git_ops.git_add(pp, arguments["paths"]))
+
+        elif name == "git_stash":
+            return r(git_ops.git_stash(pp, arguments.get("action", "push"), arguments.get("message", "")))
+
+        elif name == "git_pull":
+            return r(git_ops.git_pull(pp, arguments.get("branch", ""), arguments.get("rebase", False)))
+
+        elif name == "git_branch_create":
+            return r(git_ops.git_branch_create(pp, arguments["name"]))
+
+        elif name == "git_restore":
+            return r(git_ops.git_restore(pp, arguments["file_path"], arguments.get("staged", False)))
+
+        elif name == "git_show_file":
+            return r(git_ops.git_show_file(pp, arguments["path"], arguments.get("rev", "HEAD")))
+
+        elif name == "file_edit":
+            result = file_manager.file_edit(pp, arguments["path"], arguments["old_string"], arguments["new_string"])
+            activity_logger.log_activity(pp, dev_name, "file_edit", f"Edited: {arguments['path']}")
+            return r(result)
+
+        elif name == "file_grep":
+            return r(file_manager.file_grep(pp, arguments["pattern"], arguments.get("file_pattern", "*"), arguments.get("context", 0)))
+
+        elif name == "file_read_lines":
+            return r(file_manager.file_read_lines(pp, arguments["path"], arguments.get("offset", 1), arguments.get("limit", 200)))
+
+        elif name == "file_append":
+            result = file_manager.file_append(pp, arguments["path"], arguments["content"])
+            activity_logger.log_activity(pp, dev_name, "file_append", f"Appended: {arguments['path']}")
+            return r(result)
+
+        elif name == "file_delete":
+            result = file_manager.file_delete(pp, arguments["path"], arguments.get("recursive", False))
+            activity_logger.log_activity(pp, dev_name, "file_delete", f"Deleted: {arguments['path']}")
+            return r(result)
+
+        elif name == "file_move":
+            result = file_manager.file_move(pp, arguments["src"], arguments["dst"], arguments.get("overwrite", False))
+            activity_logger.log_activity(pp, dev_name, "file_move", f"{arguments['src']} → {arguments['dst']}")
+            return r(result)
+
+        elif name == "file_mkdir":
+            return r(file_manager.file_mkdir(pp, arguments["path"]))
+
+        elif name == "file_tree":
+            return r(file_manager.file_tree(pp, arguments.get("path", "."), arguments.get("max_depth", 3)))
+
+        elif name == "docker_exec":
+            return r(docker_ops.docker_exec(arguments["container"], arguments["command"]))
+
+        elif name == "docker_compose_up":
+            return r(docker_ops.docker_compose_up(pp, arguments.get("detach", True)))
+
+        elif name == "docker_compose_down":
+            if not arguments.get("confirm", False):
+                return r("⚠️ compose down poora stack band kar dega. confirm=True se dobara call karo.")
+            return r(docker_ops.docker_compose_down(pp))
+
+        elif name == "docker_restart":
+            return r(docker_ops.docker_restart(arguments["container"]))
+
+        elif name == "port_kill":
+            return r(port_manager.port_kill(arguments["port"]))
+
+        elif name == "env_get":
+            return r(env_manager.env_get(pp, arguments["key"], arguments.get("env_file", ".env")))
+
+        elif name == "log_grep":
+            return r(log_reader.log_grep(pp, arguments["log_path"], arguments["pattern"], arguments.get("n", 50)))
+
+        elif name == "package_list":
+            return r(package_manager.package_list(pp))
+
+        elif name == "package_remove":
+            return r(package_manager.package_remove(pp, arguments["package"]))
+
+        elif name == "scripts_list":
+            return r(package_manager.scripts_list(pp))
+
+        elif name == "script_run":
+            return r(package_manager.script_run(pp, arguments["script"]))
+
+        elif name == "service_run":
+            result = process_manager.service_run(pp, arguments["name"], arguments["command"])
+            activity_logger.log_activity(pp, dev_name, "service_run", f"{arguments['name']}: {arguments['command'][:60]}")
+            return r(result)
+
+        elif name == "service_logs":
+            return r(process_manager.service_logs(pp, arguments.get("name", ""), arguments.get("n", 50)))
+
+        elif name == "service_stop":
+            return r(process_manager.service_stop(pp, arguments["name"]))
+
+        elif name == "service_restart":
+            return r(process_manager.service_restart(pp, arguments["name"]))
+
+        elif name == "http_request":
+            return r(http_client.http_request(
+                pp,
+                arguments["url"],
+                arguments.get("method", "GET"),
+                arguments.get("headers", ""),
+                arguments.get("body", ""),
+                arguments.get("timeout", 30),
+            ))
+
+        elif name == "db_query":
+            return r(db_client.db_query(pp, arguments["query"], arguments.get("confirm", False)))
+
+        elif name == "typecheck":
+            return r(typecheck_mod.typecheck(pp))
+
         else:
             # Framework switch check — warn AI before executing plugin tool
             switch_warning = project_context.check_framework_switch(pp)
@@ -964,4 +1439,4 @@ def run_server(project_path: str, port: int):
     PROJECT_PATH = project_path
     os.environ["MCP_PROJECT_PATH"] = project_path
     app = _build_app()
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")

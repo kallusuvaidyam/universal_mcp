@@ -5,6 +5,8 @@ Ported from frappe-mcp with fastmcp.Image removed — returns base64 dict instea
 """
 
 import base64
+import concurrent.futures
+import functools
 import os
 import threading
 from pathlib import Path
@@ -12,6 +14,29 @@ from typing import Optional
 from urllib.parse import urlparse
 
 _lock = threading.Lock()
+
+# Playwright sync API asyncio event loop par nahi chal sakta, aur uske objects
+# usi thread se bandhe hote hain jisme bane — isliye saare browser ops is ek
+# dedicated thread par chalte hain.
+_browser_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="browser")
+_browser_thread_id = None
+
+
+def _capture_thread_id():
+    global _browser_thread_id
+    _browser_thread_id = threading.get_ident()
+
+
+_browser_executor.submit(_capture_thread_id).result()
+
+
+def _on_browser_thread(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if threading.get_ident() == _browser_thread_id:
+            return fn(*args, **kwargs)
+        return _browser_executor.submit(fn, *args, **kwargs).result()
+    return wrapper
 _pw = None
 _browser = None
 _context = None
@@ -92,6 +117,7 @@ def _record_step(action, data):
     _current_workflow.append({"action": action, "data": data})
 
 
+@_on_browser_thread
 def browser_navigate(url: str, screenshot: bool = True) -> dict:
     """
     Open a URL in the browser.
@@ -110,6 +136,7 @@ def browser_navigate(url: str, screenshot: bool = True) -> dict:
         return {"success": False, "error": str(e), "url": url}
 
 
+@_on_browser_thread
 def browser_screenshot() -> dict:
     """Take a screenshot of the current browser page."""
     try:
@@ -128,6 +155,7 @@ def save_current_workflow(workflow_name: str) -> dict:
     return {"success": True, "workflow_name": workflow_name, "steps_saved": total}
 
 
+@_on_browser_thread
 def browser_click(selector: str, screenshot: bool = True) -> dict:
     """
     Click an element by CSS selector or text.
@@ -195,6 +223,7 @@ def browser_click(selector: str, screenshot: bool = True) -> dict:
         return {"success": False, "error": str(e)}
 
 
+@_on_browser_thread
 def browser_type(selector: str, text: str, clear_first: bool = True) -> dict:
     """
     Type text into an input field.
@@ -217,6 +246,7 @@ def browser_type(selector: str, text: str, clear_first: bool = True) -> dict:
         return {"success": False, "error": str(e)}
 
 
+@_on_browser_thread
 def browser_press_key(key: str) -> dict:
     """
     Press a keyboard key.
@@ -231,6 +261,7 @@ def browser_press_key(key: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+@_on_browser_thread
 def browser_get_content() -> dict:
     """Get visible text content of the current page (first 8000 chars)."""
     try:
@@ -245,6 +276,7 @@ def browser_get_content() -> dict:
         return {"success": False, "error": str(e)}
 
 
+@_on_browser_thread
 def browser_get_element(selector: str) -> dict:
     """
     Find a specific element and return its content.
@@ -290,6 +322,7 @@ def browser_get_element(selector: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
+@_on_browser_thread
 def browser_wait(milliseconds: int = 2000) -> dict:
     """Wait for page/animation to finish, then take screenshot."""
     try:
@@ -300,6 +333,7 @@ def browser_wait(milliseconds: int = 2000) -> dict:
         return {"success": False, "error": str(e)}
 
 
+@_on_browser_thread
 def browser_click_at(x: int, y: int, screenshot: bool = True) -> dict:
     """
     Click at exact pixel coordinates on the current page.
@@ -317,6 +351,7 @@ def browser_click_at(x: int, y: int, screenshot: bool = True) -> dict:
         return {"success": False, "error": str(e)}
 
 
+@_on_browser_thread
 def browser_save_session() -> dict:
     """Manually save current browser session (cookies) to disk."""
     try:
@@ -326,6 +361,7 @@ def browser_save_session() -> dict:
         return {"success": False, "error": str(e)}
 
 
+@_on_browser_thread
 def browser_launch(browser_type: str = "chromium") -> dict:
     """
     Launch a specific browser. Closes current browser first.
@@ -347,6 +383,7 @@ def browser_launch(browser_type: str = "chromium") -> dict:
     }
 
 
+@_on_browser_thread
 def browser_close() -> dict:
     """Close the browser and free resources. Session auto-saved."""
     global _pw, _browser, _context, _page
